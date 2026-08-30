@@ -82,7 +82,7 @@ namespaces:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | string | — | The namespace. The **reserved empty name `\"\"`** catches channels with no separator; a namespace may not be *named* `default`. |
+| `name` | string | — | The namespace. The **reserved empty name `""`** catches channels with no separator; a namespace may not be *named* `default`. |
 | `client_events` | bool | `false` | Permit `publish` from clients on these channels. M4. |
 | `rate_limit` | string | `"10/s"` | Client-event rate per connection. Only meaningful with `client_events`. |
 | `max_message_size` | bytes | inherits `limits.max_message_size` | Per-namespace override. |
