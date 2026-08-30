@@ -63,6 +63,8 @@ Markdown.
 | 13 | [review-findings](13-review-findings.md) | explanatory | Adversarial review of M0 and what changed because of it |
 | 14 | [coding-standards](14-coding-standards.md) | **normative** | TDD, coverage gate, comments, concurrency rules |
 | 15 | [releasing](15-releasing.md) | explanatory | Versioning policy, cutting a release, verifying and yanking artifacts |
+| 16 | [integration-guide](16-integration-guide.md) | explanatory | Adopting this in an existing application, with a worked Flask example |
+| 17 | [production-readiness](17-production-readiness.md) | explanatory | Everything required before real users |
 | 14 | [coding-standards](14-coding-standards.md) | **normative** | TDD, coverage gate, comments, concurrency, security |
 | — | [AGENTS](AGENTS.md) | normative-ish | How to work in this repository |
 

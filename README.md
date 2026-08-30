@@ -115,7 +115,7 @@ example.com/       → application
 example.com/ws     → sidecartunnel:8000
 ```
 
-The proxy must pass `Upgrade` and `Connection` through, forward `Origin` unmodified, and have an **idle timeout above `ping_interval`** (default 25s). A lower idle timeout reaps healthy sockets every 60 seconds.
+The proxy must pass `Upgrade` and `Connection` through, forward `Origin` unmodified, and have an **idle timeout above `ping_interval`** (default 25s). A lower idle timeout reaps healthy sockets on that timeout.
 
 Redis needs `client-output-buffer-limit pubsub` raised from its default of `32mb 8mb 60`. At the default, Redis disconnects the gateway during a broadcast burst and the resubscribe leaves it immediately behind again.
 
@@ -171,6 +171,8 @@ Tests are written before implementations and coverage is gated at **100%** in CI
 | [13-review-findings](docs/13-review-findings.md) | Adversarial review of the spec and what changed |
 | [14-coding-standards](docs/14-coding-standards.md) | **Normative.** TDD, coverage, comments, concurrency rules |
 | [15-releasing](docs/15-releasing.md) | Versioning policy, cutting a release, verifying artifacts |
+| [16-integration-guide](docs/16-integration-guide.md) | Adopting this in an existing app, with a worked Flask example |
+| [17-production-readiness](docs/17-production-readiness.md) | Everything required before real users |
 
 ## Contributing
 

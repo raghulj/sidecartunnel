@@ -29,3 +29,11 @@ go.work.sum
 .vscode/
 *.swp
 *~
+
+# examples/flask — the Python reference application
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+# Never commit a filled-in .env; .env.example carries the placeholders.
+examples/flask/.env

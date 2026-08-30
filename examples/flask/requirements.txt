@@ -1,0 +1,11 @@
+# The application side of sidecartunnel needs a web framework, a Redis client, and
+# nothing else. There is no websocket library and no async worker class.
+Flask>=3.0
+redis>=5.0
+
+# Serving. A fixed worker pool is the premise of the whole design — see
+# docs/10-operations.md §4 on why the reconnect spread exists.
+gunicorn>=21.2
+
+# Tests only.
+pytest>=8.0

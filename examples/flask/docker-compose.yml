@@ -1,0 +1,64 @@
+# app + gateway + redis + a proxy that puts them on one origin.
+#
+#     cp .env.example .env && $EDITOR .env && docker compose up
+#     open http://localhost:8080
+#
+# The gateway is not implemented yet (docs/12-roadmap.md M1/M2), so the sidecartunnel
+# service will not start until it is. Everything on the application side — the webhook,
+# the publish, ?since=, revocation — runs and is tested without it.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [webapp]
+
+  webapp:
+    build: .
+    env_file: .env
+    volumes:
+      # The client library, at the path templates/index.html imports it from. A real
+      # application copies sidecartunnel.js into its own static directory instead.
+      - ../../client/js:/client/js:ro
+    depends_on: [redis]
+    # Port 5000 is deliberately not published. The proxy is the only way in, which is
+    # what keeps the websocket and the application on one origin.
+
+  sidecartunnel:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      # docs/08-config.md §3. One app block; the ST_APP__0__* form in
+      # docs/10-operations.md §3 is left over from multi-app, which was cut.
+      ST_SERVER__ALLOWED_ORIGINS: "${ST_ALLOWED_ORIGINS}"
+      ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"
+      ST_APP__WEBHOOK_SECRETS: "${ST_WEBHOOK_SECRETS}"
+      ST_CONTROL__SECRET: "${ST_CONTROL_SECRET}"
+      ST_BUS__URL: "redis://redis:6379/3"
+      ST_BUS__PREFIX: "${ST_BUS_PREFIX}"
+      # Lists of objects cannot be expressed in environment variables, so namespaces
+      # needs the YAML file or this. With neither, a built-in default block catches
+      # every channel and subscribes still succeed.
+      ST_NAMESPACES_JSON: '[{"name":"room"},{"name":"user"},{"name":"org"}]'
+      # Loopback by default and never published. The compose network can reach it;
+      # `docker compose port` cannot.
+      ST_ADMIN__LISTEN: "0.0.0.0:9001"
+      ST_ADMIN__TOKEN: "${ST_ADMIN_TOKEN}"
+      ST_LOG__LEVEL: "debug"
+    depends_on: [redis]
+    # No ports: block. EXPOSE 9001 is deliberately absent from the gateway image, and
+    # publishing the admin listener would undo that.
+
+  redis:
+    image: redis:7-alpine
+    # Raised from the default 32mb 8mb 60. At the default, Redis evicts the gateway
+    # during a broadcast burst and the resubscribe leaves it behind again — a stable
+    # oscillation, not a transient. docs/10-operations.md §3.
+    command: >
+      redis-server
+      --client-output-buffer-limit "pubsub 256mb 64mb 60"
+      --save ""

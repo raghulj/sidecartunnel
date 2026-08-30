@@ -40,7 +40,7 @@ Whatever terminates TLS must:
 
 - pass `Upgrade` and `Connection` through
 - have an **idle timeout above `server.ping_interval`**, or it will reap healthy sockets
-  every 25 seconds and you will chase it for an afternoon
+  on that timeout and you will chase it for an afternoon
 - forward `Origin` unmodified — the allowlist depends on it
 - set `X-Forwarded-For`, **and** have its own CIDR listed in `server.trusted_proxies`.
   Without that entry the gateway discards the header and reports the proxy's address to
@@ -71,11 +71,11 @@ services:
     image: ghcr.io/…/sidecartunnel:1.0.0
     environment:
       ST_SERVER__ALLOWED_ORIGINS: "https://app.example.com"
-      ST_APP__0__NAME: main
-      ST_APP__0__CONNECT_URL: "http://webapp:5000/_st/connect"
-      ST_APP__0__WEBHOOK_SECRET_FILE: /run/secrets/st_webhook
+      ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"
+      ST_APP__WEBHOOK_SECRETS_FILE: /run/secrets/st_webhook
+      ST_CONTROL__SECRET_FILE: /run/secrets/st_control
       ST_BUS__URL: "redis://redis:6379/3"
-    secrets: [st_webhook]
+    secrets: [st_webhook, st_control]
     healthcheck:
       test: ["CMD", "/sidecartunnel", "healthcheck"]
       interval: 10s

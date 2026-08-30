@@ -104,18 +104,26 @@ def st_connect():
 
     # Verify the signature FIRST. Parsing attacker-controlled input before
     # authenticating it turns a malformed header into an unauthenticated 500,
-    # which the gateway then treats as transient and retries.
+    # which the gateway then treats as transient and retries forever.
+    #
+    # Three traps here, all of which produce that 500 if you get them wrong:
+    #   - `int(ts)` on a 400-digit header raises OverflowError, NOT ValueError.
+    #     Bound the length before converting, or compare as integers only after
+    #     an isdigit() check.
+    #   - hmac.compare_digest raises TypeError on a non-ASCII str, and header
+    #     values arrive latin-1 decoded. Encode before comparing.
+    #   - A signed body that is valid JSON but not an object (e.g. `[]` or `7`)
+    #     blows up when indexed. Check the type.
+    if not sig.isascii() or len(ts) > 20 or not ts.isdigit():
+        abort(403)
+
     cookie_digest = hashlib.sha256(request.headers.get("Cookie", "").encode()).hexdigest()
     signed = f"{ts}.{nonce}.{cookie_digest}.{hashlib.sha256(body).hexdigest()}".encode()
     expected = hmac.new(WEBHOOK_SECRET, signed, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, sig):
+    if not hmac.compare_digest(expected.encode(), sig.encode()):
         abort(403)
 
-    try:
-        skew = abs(time.time() - int(ts))
-    except ValueError:
-        abort(403)
-    if skew > 300:
+    if abs(int(time.time()) - int(ts)) > 300:
         abort(403)
 
     user = resolve_session(request.cookies)      # your existing code
@@ -228,12 +236,27 @@ HTTPS call a hosted service requires.
 Reserved channel `{bus.prefix}_control`, consumed by every replica. Clients can never
 subscribe to it: any channel beginning `_` is refused with error 103.
 
-Control messages are **signed**, and unsigned or stale ones are dropped and counted:
+Control messages are **signed**, and unsigned or stale ones are dropped and counted.
+
+The action travels as a **JSON string**, not as sibling fields, and the signature covers
+those exact bytes:
 
 ```json
-{"ts": 1756612800, "nonce": "01J8…", "sig": "<HMAC-SHA256(control_secret, ts.nonce.body)>",
- "action": "disconnect", "user": "u-7", "reason": "account suspended"}
+{"ts": 1756612800,
+ "nonce": "01J8XYZ...",
+ "body": "{\"action\":\"disconnect\",\"user\":\"u-7\",\"reason\":\"suspended\"}",
+ "sig": "<hex HMAC-SHA256(control_secret, ts + \".\" + nonce + \".\" + body)>"}
 ```
+
+The receiver verifies over the literal `body` string, then parses it. This is deliberate:
+an earlier draft put the action fields flat in the envelope and signed "the body", which
+is **not implementable** — JSON object serialization is not canonical, so a receiver
+cannot recover the bytes the sender signed. Two libraries ordering keys differently
+produce different signatures for the same message. Carrying the body as an opaque string
+removes the question entirely; no canonicalization rule is needed because nothing is
+re-serialized.
+
+`nonce` is echoed for receivers that want to reject replays within the ±300s window.
 
 The read-only connect webhook was signed while the operation that can disconnect every
 user on every replica — and, via `refresh`, stampede the application — was not. That

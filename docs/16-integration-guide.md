@@ -88,6 +88,26 @@ application's worker pool. The correct answer to a malformed timestamp is a flat
 The `examples/flask/test_app.py` case `test_malformed_timestamp_is_403_not_500` is the
 executable form of this paragraph.
 
+Parse the timestamp with integer arithmetic. `abs(time.time() - int(ts))` — the form in
+`04-integration.md` §1.4 — raises `OverflowError`, **not** `ValueError`, on a 400-digit
+timestamp, so a `except ValueError` around it does not catch it and the result is the
+unauthenticated 500 this whole section exists to prevent. Python integers do not overflow;
+floats do.
+
+```python
+try:
+    skew = abs(int(time.time()) - int(ts))
+except (TypeError, ValueError):
+    abort(403)
+if skew > 300:
+    abort(403)
+```
+
+Two more inputs in the same class. `hmac.compare_digest` raises `TypeError` on a
+non-ASCII `str`, and header values reach the application as latin-1, so a signature header
+of `"ü" * 64` is a 500 unless it is caught. And a body that is not a JSON object at all
+must be refused rather than indexed into.
+
 ### 2.3 The Signature
 
 ```
@@ -604,44 +624,49 @@ application, where CSRF, rate limiting, validation and request logging apply unc
 
 ### 9.1 The Client Library
 
-[`client/js/sidecartunnel.js`](../client/js/) is the browser client: a dependency-free ES
-module, no build step. It carries the obligations in `03-client-protocol.md` §8 so the
-application does not have to:
+[`client/js/sidecartunnel.js`](../client/js/) is the browser client: one file, no
+dependencies, no build step. It carries the obligations in `03-client-protocol.md` §8 so
+the application does not have to:
 
 | Obligation | Why the library owns it |
 |---|---|
-| `connect` first, wait for the reply | Anything else is error 101. |
+| `connect` first, wait for the reply | Anything else is error 101. Commands issued earlier are queued, and a `subscribe` issued before the socket opens rides along in the connect frame's `subs`. |
 | Honour `retry_after` over its own backoff | The gateway knows how many connections it dropped; the client does not. |
 | Full jitter when `retry_after` is absent: `random(0, min(30s, 2^n))` | The multiplicative form fires inside the one-second window that takes the application down. |
 | Maintain a subscription registry and replay it after reconnect | The gateway remembers nothing across connections. |
 | Honour `reconnect: false` | Retrying through a revocation is a denial of service against the webhook. |
 | Drop a channel on an `unsubscribed` push and not resubscribe it | Replaying a revoked channel earns error 103 on every reconnect forever. |
-| Fire a reconnect event so the application can reconcile | The bus is at-most-once; a reconnect implies a gap. |
+| Fire `onReconnect` so the application can reconcile | The bus is at-most-once; a reconnect implies a gap. |
 
-Wiring, with reconciliation on every reconnect:
+The application supplies three things: what to render, where to reconcile from, and what
+to show when the connection stops permanently.
 
 ```html
 <script type="module">
-import { SidecarTunnel } from "/client/js/sidecartunnel.js";
+import { connect } from "/static/sidecartunnel.js";
 
 let lastSeen = window.__BOOTSTRAP__.latest_id;
 
-const st = new SidecarTunnel("/ws");
-
-st.on("message.created", (msg) => {
-  if (msg.id > lastSeen) { lastSeen = msg.id; render(msg); }
-});
-
-st.on("reconnect", async () => {
+async function reconcile() {
   const r = await fetch(`/api/rooms/4410/messages?since=${lastSeen}`);
   const { messages, latest_id } = await r.json();
   messages.forEach(render);
   lastSeen = latest_id;
+}
+
+const st = connect({
+  url: "/ws",
+  onReconnect: reconcile,                    // after every reconnect, not only the first
+  onStateChange(state, info) {
+    if (state === "closed" && info.permanent) showBanner(info.reason);
+  },
 });
 
-st.on("denied", (e) => showBanner("Realtime unavailable: " + e.reason));
+st.subscribe("room-4410", (pub) => {
+  if (pub.event === "message.created") render(pub.data);
+}).catch((err) => console.warn("not subscribed:", err.code));
 
-await st.connect(["room-4410", "user-7"]);
+await reconcile();
 </script>
 ```
 
@@ -651,11 +676,15 @@ Three rules for the application code around it:
    accelerator in front of a database that was always the source of truth.
 2. **Make the merge idempotent on the payload id.** Reconciliation and a live push will
    deliver the same row.
-3. **Send `X-St-Client` on writes.** `st.clientId` after connect.
+3. **Send `X-St-Client` on writes.** `st.clientId` after the socket is open.
 
-The library is milestone M3 (`12-roadmap.md`). Until it lands, a client written directly
-against `03-client-protocol.md` must satisfy the table above; `examples/flask/templates/index.html`
-contains a minimal one.
+Two members worth knowing during an incident. `st.sync()` returns the gateway's
+authoritative subscription set, and comparing it with `st.channels()` is the way to find a
+divergence whose symptom is otherwise indistinguishable from a quiet channel. `st.stats`
+carries `{connections, reconnects, orphanPushes, malformed}`.
+
+The full API is in [`client/js/README.md`](../client/js/README.md). A worked page is
+`examples/flask/templates/index.html`.
 
 ### 9.2 Proxy Routing
 

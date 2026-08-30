@@ -138,16 +138,16 @@ List. See `06-channels.md` §3 for semantics.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `name` | string | — | **Required**, unique. A namespace may not be named `default`. |
-
-There is no `auth_required` key. It was cut (`13-review-findings.md` S4) because it
-contradicted FR-5 and reintroduced the public-channel hole. A config that still sets it
-fails to start with a message naming the key, rather than being silently ignored.
+| `name` | string | — | **Required**, unique. The reserved empty name `""` owns separator-less channels; a namespace may not be named `default`. |
 | `client_events` | bool | `false` | M4 |
 | `rate_limit` | string | `10/s` | `<int>/<s\|m>` |
 | `max_message_size` | bytes | inherits | 1–1 MiB |
 | `presence` | bool | `false` | M4, rejected as unimplemented if set |
 | `history_size` | int | `0` | M4, rejected as unimplemented if non-zero |
+
+There is no `auth_required` key. It was cut (`13-review-findings.md` S4) because it
+contradicted FR-5 and reintroduced the public-channel hole. A config that still sets it
+fails to start with a message naming the key rather than being silently ignored.
 
 Setting an unimplemented key is a startup error rather than a warning. A config that
 claims presence is on, while presence does nothing, is a lie an operator will act on.

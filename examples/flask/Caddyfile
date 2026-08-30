@@ -1,0 +1,11 @@
+# Path routing, so the websocket is same-origin with the application and the browser
+# attaches the session cookie to the upgrade with no frontend authentication code.
+# docs/10-operations.md §2.
+:8080 {
+	handle /ws* {
+		reverse_proxy sidecartunnel:8000
+	}
+	handle {
+		reverse_proxy webapp:5000
+	}
+}

@@ -1,0 +1,172 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sidecartunnel — reference application</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 1.5rem; max-width: 46rem; }
+  h1 { font-size: 1rem; margin: 0 0 1rem; }
+  .bar { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center;
+         padding: .5rem .75rem; border: 1px solid currentColor; margin-bottom: 1rem; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #999; }
+  .dot.open { background: #2a2; }
+  .dot.connecting { background: #ca3; }
+  .dot.closed { background: #c33; }
+  ul { list-style: none; padding: 0; margin: 0 0 1rem;
+       border: 1px solid currentColor; min-height: 12rem; max-height: 22rem;
+       overflow-y: auto; }
+  li { padding: .35rem .75rem; border-bottom: 1px solid rgba(128,128,128,.3); }
+  li .id { opacity: .5; }
+  li.live { background: rgba(42,170,42,.15); }
+  form { display: flex; gap: .5rem; }
+  input[type=text] { flex: 1; padding: .5rem; font: inherit; }
+  button, select { padding: .5rem; font: inherit; }
+  code { opacity: .75; }
+  .note { border: 1px dashed currentColor; padding: .75rem; margin-bottom: 1rem; }
+</style>
+
+<h1>sidecartunnel reference application</h1>
+
+<div class="bar">
+  <span class="dot" id="dot"></span>
+  <span id="state">connecting</span>
+  <span>user <code>u-{{ user.id }}</code> ({{ user.name }})</span>
+  <span>client <code id="clientid">—</code></span>
+  <span>since <code id="cursor">0</code></span>
+  <select id="rooms">
+    {% for room in rooms %}
+      <option value="{{ room.id }}" {% if room.id == room_id %}selected{% endif %}>
+        room-{{ room.id }} · {{ room.name }}
+      </option>
+    {% endfor %}
+  </select>
+  <a href="/logout">logout</a>
+</div>
+
+<div class="note">
+  Grants for this connection: <code>{{ grants | join(' · ') }}</code><br>
+  Open this page in a second tab. A message sent in one appears in the other over the
+  websocket, highlighted. It does not re-appear in the tab that sent it, because the write
+  carried <code>X-St-Client</code> and the publish set <code>exclude</code>.
+</div>
+
+<ul id="messages"></ul>
+
+<form id="compose">
+  <input type="text" id="body" placeholder="message" autocomplete="off" required>
+  <button type="submit">Send</button>
+</form>
+
+<script type="module">
+// The client library. One file, no dependencies, no build step. It carries every
+// obligation in docs/03-client-protocol.md §8, so nothing below re-implements
+// backoff, the subscription registry, or reconnect:false.
+import { connect } from "/client/js/sidecartunnel.js";
+
+const ROOM = {{ room_id }};
+const CHANNEL = `room-${ROOM}`;
+const API = `/api/rooms/${ROOM}/messages`;
+
+const seen = new Set();          // the merge is idempotent on the payload id
+let cursor = 0;
+
+const $ = (id) => document.getElementById(id);
+
+function render(message, live) {
+  if (seen.has(message.id)) return;
+  seen.add(message.id);
+  const li = document.createElement("li");
+  if (live) li.className = "live";
+  li.innerHTML = `<span class="id">#${message.id}</span> `;
+  li.appendChild(document.createTextNode(`${message.user_name}: ${message.body}`));
+  $("messages").appendChild(li);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  if (message.id > cursor) { cursor = message.id; $("cursor").textContent = cursor; }
+}
+
+// Reconciliation. docs/07-delivery.md §2.
+//
+// Delivery is at-most-once, so every reconnect implies a gap. This runs after every
+// one — not only on first load. Without it everything appears to work until the first
+// deploy, and then whatever was published during the reconnect is lost with no signal
+// anywhere.
+async function reconcile() {
+  const res = await fetch(cursor ? `${API}?since=${cursor}` : API);
+  const body = await res.json();
+  body.messages.forEach((m) => render(m, false));
+  if (body.latest_id > cursor) { cursor = body.latest_id; $("cursor").textContent = cursor; }
+}
+
+const st = connect({
+  url: {{ ws_url | tojson }},
+
+  onStateChange(state, info) {
+    $("dot").className = `dot ${state}`;
+    $("clientid").textContent = st.clientId || "—";
+    if (state === "open") {
+      $("state").textContent = `open · ${info.channels.length} channels`;
+    } else if (state === "closed" && info.permanent) {
+      // reconnect:false is a decision, not a transient failure. The library has
+      // already stopped; surfacing it is the application's job.
+      $("state").textContent = `stopped · ${info.code} ${info.reason || ""}`;
+    } else {
+      $("state").textContent = info.delay
+        ? `retry in ${Math.round(info.delay)}ms`
+        : state;
+    }
+  },
+
+  // Fires after the connect reply of every reconnection, which is exactly where the
+  // ?since= fetch belongs.
+  onReconnect: reconcile,
+});
+
+// A subscribe issued before the socket opens is folded into the connect frame's subs,
+// so this costs no extra round trip. A channel the grants do not cover rejects with
+// 103 rather than failing the whole connect.
+const deny = (channel) => (err) =>
+  console.warn(`not subscribed to ${channel}: ${err.code} ${err.message}`);
+
+st.subscribe(CHANNEL, (pub) => {
+  if (pub.event === "message.created") render(pub.data, true);
+}).catch(deny(CHANNEL));
+
+st.subscribe("user-{{ user.id }}", (pub) => {
+  console.log("private", pub.event, pub.data);
+}).catch(deny("user-{{ user.id }}"));
+
+st.subscribe("status", (pub) => {
+  console.log("broadcast", pub.event, pub.data);
+}).catch(deny("status"));
+
+await reconcile();
+
+// Durable writes go over ordinary HTTP. The socket is receive-only for anything that
+// matters, so CSRF, rate limiting, validation and request logging apply unchanged.
+$("compose").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = $("body").value.trim();
+  if (!body) return;
+  $("body").value = "";
+  const res = await fetch(API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      // Suppresses the echo of this write back to this tab. Every other tab,
+      // including this user's own, still receives it — each tab has its own client id.
+      ...(st.clientId ? { "X-St-Client": st.clientId } : {}),
+    },
+    body: JSON.stringify({ body }),
+  });
+  if (res.ok) render(await res.json(), false);
+});
+
+$("rooms").addEventListener("change", (e) => {
+  window.location = `/?room=${e.target.value}`;
+});
+
+// Diagnostics. st.sync() returns the gateway's authoritative subscription set; comparing
+// it against st.channels() is how a divergence is found, and the symptom is otherwise
+// indistinguishable from a quiet channel.
+window.st = st;
+</script>

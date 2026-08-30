@@ -187,7 +187,7 @@ whose send is non-blocking, falling back to `go conn.Close()` on overflow.
   — was indefensible.
 - `refresh` and `disconnect` MUST name exactly one of `user` or `client`, matched
   **exactly, never as a glob**. An omitted target is a validation error, not "all".
-- Forced revalidation is spread over `control.refresh_spread` (default 30s) with
+- Forced revalidation is spread over `control.refresh_spread` (default 60s) with
   `retry_after`, so a legitimate mass refresh cannot stampede the application either.
 
 ---
