@@ -54,7 +54,7 @@ command the client wants a reply to:
 {"id": 1, "connect":     {"subs": ["room-4410"]}}
 {"id": 2, "subscribe":   {"channel": "room-4410"}}
 {"id": 3, "unsubscribe": {"channel": "room-4410"}}
-{"id": 4, "publish":     {"channel": "desk-42", "data": {"typing": true}}}
+{"id": 4, "publish":     {"channel": "desk-42", "event": "typing", "data": {"typing": true}}}
 {"ping": {}}
 ```
 
@@ -99,7 +99,11 @@ Reply fields:
 | `client` | string | 16 hex chars. Stable for the connection's life. Used in `exclude`. |
 | `ping` | int | Seconds between server pings. Informational; the client does not act on it. |
 | `expires_in` | int | Seconds until the gateway closes with 3503 for re-authorization. Already clamped to `[app.min_expiry, app.max_expiry]` — the client is told the effective value, not the application's raw one. |
-| `subs` | object | Map of channel → `{}` for those in the request that succeeded. |
+| `subs` | object | Map of channel → `{}` for those in the request that succeeded. Always an object: when nothing was granted it is `{}`, never `null`. |
+
+An empty `subs` is the important case — it means every requested channel was refused — and
+a client doing `Object.keys(subs)` must not have to guard against `null`. The same applies
+to `sync`'s `channels`, which is `[]` when empty.
 
 Channels in `subs` that fail authorization are **omitted from the reply map** rather than
 failing the whole connect. The client compares what it asked for against what it got.

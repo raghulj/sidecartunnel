@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"id\":1,\"subscribe\":{\"channel\":\"room-4410\"")

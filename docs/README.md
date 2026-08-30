@@ -61,6 +61,8 @@ Markdown.
 | 11 | [testing](11-testing.md) | normative-ish | Required test coverage per milestone |
 | 12 | [roadmap](12-roadmap.md) | explanatory | Milestones, scope ladder, open decisions |
 | 13 | [review-findings](13-review-findings.md) | explanatory | Adversarial review of M0 and what changed because of it |
+| 14 | [coding-standards](14-coding-standards.md) | **normative** | TDD, coverage gate, comments, concurrency rules |
+| 15 | [releasing](15-releasing.md) | explanatory | Versioning policy, cutting a release, verifying and yanking artifacts |
 | 14 | [coding-standards](14-coding-standards.md) | **normative** | TDD, coverage gate, comments, concurrency, security |
 | — | [AGENTS](AGENTS.md) | normative-ish | How to work in this repository |
 

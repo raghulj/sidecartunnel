@@ -170,6 +170,7 @@ Tests are written before implementations and coverage is gated at **100%** in CI
 | [12-roadmap](docs/12-roadmap.md) | Milestones and open decisions |
 | [13-review-findings](docs/13-review-findings.md) | Adversarial review of the spec and what changed |
 | [14-coding-standards](docs/14-coding-standards.md) | **Normative.** TDD, coverage, comments, concurrency rules |
+| [15-releasing](docs/15-releasing.md) | Versioning policy, cutting a release, verifying artifacts |
 
 ## Contributing
 

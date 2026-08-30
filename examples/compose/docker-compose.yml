@@ -1,0 +1,146 @@
+# sidecartunnel, Redis and a placeholder application.
+#
+# The settings that are not obvious are the ones that matter: see the README beside this
+# file, and docs/10-operations.md §3.
+#
+# Every secret here is a placeholder. Replace all of them before this is reachable from
+# anywhere.
+
+name: sidecartunnel-example
+
+services:
+  sidecartunnel:
+    image: ghcr.io/raghulj/sidecartunnel:latest
+    # Pin a released tag — `:vX.Y.Z` — before running this anywhere real. No release has
+    # been cut yet; until one is, build the image locally with `docker build -t
+    # sidecartunnel:dev .` from the repository root and point this line at it.
+
+    environment:
+      # Exact origins, no wildcards. Startup fails if this is empty.
+      ST_SERVER__ALLOWED_ORIGINS: "https://app.example.com"
+
+      # The application's authorization endpoint. Reached over the internal network, so
+      # http is fine here and would not be over the internet.
+      ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"
+
+      # PLACEHOLDER. Minimum 32 bytes. Generate with `openssl rand -hex 32`, and prefer
+      # the file form in production: any key accepts a _FILE suffix, so
+      # ST_APP__WEBHOOK_SECRETS_FILE=/run/secrets/st_webhook reads a Docker or Swarm
+      # secret and keeps the value out of `docker inspect` (docs/08-config.md §1).
+      ST_APP__WEBHOOK_SECRETS: "REPLACE-ME-webhook-secret-at-least-32-bytes-long"
+
+      # PLACEHOLDER. Minimum 32 bytes. Signs control-channel messages.
+      ST_CONTROL__SECRET: "REPLACE-ME-control-secret-at-least-32-bytes-long"
+
+      # Database index 3, not 0. A dedicated index keeps someone's cache FLUSHDB away from
+      # realtime — pub/sub itself is unaffected by FLUSHDB, but the surrounding confusion
+      # during an incident is not worth the shared index (docs/10-operations.md §3).
+      ST_BUS__URL: "redis://redis:6379/3"
+
+      ST_LOG__LEVEL: "info"
+      ST_LOG__FORMAT: "json"
+
+      # ST_ADMIN__LISTEN is deliberately not set. It defaults to 127.0.0.1:9001, the admin
+      # API is never published, and the image exposes port 8000 only.
+
+    # No published ports. The socket must be same-origin with the application, so a front
+    # proxy routes example.com/ws to sidecartunnel:8000 over this network
+    # (docs/10-operations.md §2). For a single-replica local experiment, set
+    # `replicas: 1` below and add:
+    #
+    #   ports: ["127.0.0.1:8000:8000"]
+    expose:
+      - "8000"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    # The binary checks itself. The image has no shell and no curl, and the check tests
+    # liveness only — a bus-dependent healthcheck would kill the whole fleet during a
+    # Redis restart (docs/04-integration.md §4).
+    healthcheck:
+      test: ["CMD", "/sidecartunnel", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    # Above server.drain_timeout (20s), so a stopping replica finishes its drain and tells
+    # its clients when to come back instead of being killed mid-sentence.
+    stop_grace_period: 30s
+
+    restart: unless-stopped
+
+    deploy:
+      replicas: 2
+      update_config:
+        # start-first means a rolling update never has zero replicas, so reconnecting
+        # clients always find somewhere to land.
+        order: start-first
+        # Above drain_timeout (20s). A delay below it starts the next replica while the
+        # previous one is still draining, and the clients it spread across
+        # server.drain_spread arrive at a container that is about to go away.
+        delay: 30s
+        failure_action: rollback
+      resources:
+        limits:
+          # ~35 KB per connection. 10,000 connections per replica is ~350 MiB, and one
+          # replica carrying the whole fleet after a failure is ~525 MiB (README, Sizing).
+          memory: 768M
+
+  redis:
+    image: redis:7-alpine
+
+    # The one Redis setting this system will not run correctly without. The default —
+    # `pubsub 32mb 8mb 60` — disconnects the gateway during a broadcast burst, and the
+    # resubscribe leaves it immediately behind again. The oscillation is stable rather
+    # than transient, and presents as st_bus_reconnects_total climbing against a Redis
+    # that looks perfectly healthy (docs/10-operations.md §3).
+    command:
+      - redis-server
+      - --client-output-buffer-limit
+      - "pubsub 256mb 64mb 60"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+
+    # No volume, on purpose. The bus holds no state: pub/sub messages are not persisted
+    # and nothing here is worth surviving a restart (docs/02-architecture.md).
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+    expose:
+      - "6379"
+
+    restart: unless-stopped
+
+  webapp:
+    # PLACEHOLDER for the application. Replace this with your own image — the one that
+    # serves POST /_st/connect and publishes to Redis. Nothing about it is
+    # sidecartunnel-specific beyond those two things.
+    image: nginx:1.27-alpine
+
+    environment:
+      # The same value as ST_APP__WEBHOOK_SECRETS above: the application verifies the
+      # HMAC-SHA256 signature on every connect request with it.
+      ST_WEBHOOK_SECRET: "REPLACE-ME-webhook-secret-at-least-32-bytes-long"
+
+      # The application publishes to the same Redis and the same database index. The
+      # channel key is {bus.prefix}{channel} exactly — `st:room-4410` for channel
+      # `room-4410` (docs/04-integration.md).
+      REDIS_URL: "redis://redis:6379/3"
+
+    expose:
+      - "5000"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped

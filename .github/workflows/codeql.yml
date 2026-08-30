@@ -1,0 +1,68 @@
+name: codeql
+
+# Static analysis for Go. This is a public gateway that holds every connected user's
+# session cookie in memory (docs/05-authorization.md §8), so the analysis runs on every
+# change and again weekly — a rule added to the CodeQL pack after a commit lands would
+# otherwise never see it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays, 04:17 UTC. An odd minute so the run is not queued behind everyone else's
+    # top-of-the-hour cron.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      # Upload the SARIF results to the repository's security tab.
+      security-events: write
+      # Read the workflow run status for the alert timeline.
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-and-quality is a superset of the default pack. The quality rules are
+          # noisier, and worth it here: the failure modes this project cares about —
+          # a lock held across network I/O, an unchecked error on a close path — are the
+          # ones that only appear under load.
+          queries: security-and-quality
+
+      - name: Build
+        # Explicit rather than autobuild, so the analysis compiles the same way CI does.
+        run: go build ./...
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

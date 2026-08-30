@@ -1,0 +1,81 @@
+# Dependabot — https://docs.github.com/code-security/dependabot
+#
+# Weekly, not daily: dependencies are a cost (CLAUDE.md), and a pull request per day per
+# ecosystem trains everyone to merge them without reading. Weekly is often enough to catch
+# a security advisory and rare enough that the diff still gets looked at.
+
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      # Matches the changelog filters in .goreleaser.yaml, which drop build(deps) from
+      # release notes.
+      prefix: "build"
+      include: scope
+    labels:
+      - dependencies
+      - go
+    groups:
+      # One pull request for the patch and minor bumps, individual ones for majors — a
+      # major bump on any of the four direct dependencies needs its own reading.
+      go-minor-and-patch:
+        patterns: ["*"]
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    # The release image's base and builder stages, in the Dockerfile at the repository
+    # root.
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+      include: scope
+    labels:
+      - dependencies
+      - docker
+
+  - package-ecosystem: docker
+    # The compose example pins a Redis image; an example that rots is worse than no
+    # example, because someone will copy it.
+    directory: "/examples/compose"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build"
+      include: scope
+    labels:
+      - dependencies
+      - docker

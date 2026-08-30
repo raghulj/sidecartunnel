@@ -1,0 +1,14 @@
+# Keep the build context small and free of anything the image must never contain.
+.git
+.github
+docs
+examples
+client
+dist
+bin
+coverage.out
+coverage.html
+*.md
+!README.md
+.env
+.env.*
