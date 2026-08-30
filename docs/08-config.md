@@ -13,7 +13,21 @@ YAML file, overridden by environment variables. Later wins:
 
 Scalar lists are comma-separated. Any key may be supplied from a file by appending
 `_FILE`, e.g. `ST_APP__WEBHOOK_SECRETS_FILE=/run/secrets/st` — the convention for Docker
-and Swarm secrets.
+and Swarm secrets. When both `X` and `X_FILE` are set, **`_FILE` wins**: a mounted secret
+should outrank a stale value left in a compose file.
+
+Three things this overlay deliberately does not do:
+
+- **No `${VAR}` expansion.** The `${ST_WEBHOOK_SECRET}` placeholders in §4's worked example
+  are shell substitution performed by whatever renders the file, not by the gateway. Supply
+  the value through the environment overlay instead.
+- **Unknown `ST_` variables are ignored**, unlike unknown YAML keys which are a hard error.
+  The asymmetry is forced: §4's own deployment expects `ST_WEBHOOK_SECRET` to exist in the
+  environment for substitution, and rejecting unrecognised `ST_` names would break it.
+- **A YAML type error names the line, not the key.** `max_connections: lots` reports
+  `cannot unmarshal !!str 'lots' into int` with a line number. Unknown keys, durations and
+  every rule in §3 name the key as NFR-5 requires; a raw type mismatch is the one gap, and
+  closing it would need a shadow struct per config block.
 
 **Lists of objects cannot be expressed in environment variables.** `namespaces` therefore
 needs either the YAML file or `ST_NAMESPACES_JSON` containing the whole list as JSON. An
