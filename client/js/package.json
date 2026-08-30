@@ -1,0 +1,48 @@
+{
+  "name": "@raghulj/sidecartunnel",
+  "version": "0.0.0",
+  "description": "Browser client for the sidecartunnel websocket gateway. Zero dependencies, no build step.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./sidecartunnel.js",
+  "module": "./sidecartunnel.js",
+  "unpkg": "./sidecartunnel.umd.js",
+  "jsdelivr": "./sidecartunnel.umd.js",
+  "exports": {
+    ".": {
+      "import": "./sidecartunnel.js",
+      "default": "./sidecartunnel.js"
+    },
+    "./umd": "./sidecartunnel.umd.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "sidecartunnel.js",
+    "sidecartunnel.umd.js",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test",
+    "build": "node build-umd.mjs",
+    "check": "node build-umd.mjs --check && node --test"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "websocket",
+    "realtime",
+    "sidecartunnel"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raghulj/sidecartunnel.git",
+    "directory": "client/js"
+  }
+}

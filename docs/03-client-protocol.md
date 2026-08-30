@@ -106,7 +106,10 @@ a client doing `Object.keys(subs)` must not have to guard against `null`. The sa
 to `sync`'s `channels`, which is `[]` when empty.
 
 Channels in `subs` that fail authorization are **omitted from the reply map** rather than
-failing the whole connect. The client compares what it asked for against what it got.
+failing the whole connect. The client compares what it asked for against what it got, and
+MUST remove an omitted channel from its registry rather than retrying it. A grant that has
+disappeared fails identically on every future reconnect, so a client that retains it loops
+forever — the same hazard §8.5 addresses for `unsubscribed`, reached by a different route.
 
 ### 4.2 `subscribe`
 
@@ -177,8 +180,16 @@ conforming implementations diverge silently — one drops the message, the other
 
 ### 5.2 `disconnect`
 
-Sent immediately before the websocket close frame. `reconnect` tells the client whether
-retrying could ever succeed:
+Sent immediately before the websocket close frame.
+
+**The frame is authoritative when both it and a close code are present.** When no frame
+arrives — an ungraceful kill, a proxy resetting the connection — the client falls back to
+the §7 table by close code, treating 3001, 3003, 3006 and 3501 as permanent and everything
+else, including a bare 1006, as retryable. A client that trusts only the frame will retry
+through a 3501 whose frame was lost, which is the denial-of-service against the connect
+webhook this section warns about.
+
+`reconnect` tells the client whether retrying could ever succeed:
 
 - `true` — transient. Reconnect with jittered backoff.
 - `false` — a decision was made. Stop, and surface it to the user.
@@ -252,8 +263,19 @@ A conforming client MUST:
 
 1. Send `connect` first, and wait for its reply before sending anything else.
 2. Honour `retry_after` when present. When it is absent, reconnect with **full jitter**:
-   `random(0, min(30s, 2^n))` — not the multiplicative form, which never produces a small
-   enough spread on the first attempt (§7.1).
+
+   ```
+   delay_ms = random(0, min(30000, 1000 * 2^n))      n = 0 for the first retry
+   ```
+
+   **The exponent is in seconds; the delay is in milliseconds.** Both units are spelled out
+   because `retry_after` is milliseconds two sections earlier, and reading `2^n` as
+   milliseconds too puts attempts 0 through 9 all inside one second — which is precisely
+   the hammering §7.1 exists to prevent, arrived at by obeying the wrong reading of this
+   sentence.
+
+   Full jitter, not the multiplicative `x * random(0.5, 1.5)` form: that never produces a
+   small enough spread on the first attempt (§7.1).
 3. Maintain its own subscription registry and replay it after reconnect. The gateway
    remembers nothing across connections.
 4. Honour `reconnect: false`.
