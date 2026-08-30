@@ -1,0 +1,794 @@
+<title>Sidecartunnel Protocol</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap">
+
+<style>
+:root {
+  --ground:        #F6F8FA;
+  --surface:       #FFFFFF;
+  --surface-sunk:  #EEF1F5;
+  --ink:           #121821;
+  --ink-soft:      #55616F;
+  --ink-faint:     #8593A2;
+  --rule:          #DDE3EA;
+  --rule-strong:   #C3CCD6;
+
+  /* The two sides of the boundary. Teal is the gateway; amber is your app. */
+  --gw:            #0C6F79;
+  --gw-soft:       #E2F1F2;
+  --app:           #96591A;
+  --app-soft:      #F6EDE0;
+
+  --shadow: 0 1px 2px rgba(18, 24, 33, .05), 0 8px 24px -16px rgba(18, 24, 33, .22);
+
+  --measure: 68ch;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --serif: "IBM Plex Serif", ui-serif, Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:       #0D1218;
+    --surface:      #141B23;
+    --surface-sunk: #1B242E;
+    --ink:          #E3E9F0;
+    --ink-soft:     #9AA8B7;
+    --ink-faint:    #6C7C8C;
+    --rule:         #24303B;
+    --rule-strong:  #35434F;
+    --gw:           #45BAC4;
+    --gw-soft:      #102B2E;
+    --app:          #D7A055;
+    --app-soft:     #2B2317;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:       #0D1218;
+  --surface:      #141B23;
+  --surface-sunk: #1B242E;
+  --ink:          #E3E9F0;
+  --ink-soft:     #9AA8B7;
+  --ink-faint:    #6C7C8C;
+  --rule:         #24303B;
+  --rule-strong:  #35434F;
+  --gw:           #45BAC4;
+  --gw-soft:      #102B2E;
+  --app:          #D7A055;
+  --app-soft:     #2B2317;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 16.5px;
+  line-height: 1.68;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 28px 120px;
+}
+
+.col { max-width: var(--measure); }
+
+/* ---------- masthead ---------- */
+
+.mast {
+  padding: 72px 0 40px;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: 48px;
+}
+.mast .kicker {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 22px;
+}
+.mast h1 {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: clamp(38px, 6.5vw, 62px);
+  line-height: 1.02;
+  letter-spacing: -.025em;
+  margin: 0 0 20px;
+  text-wrap: balance;
+}
+.mast .standfirst {
+  font-size: 19px;
+  line-height: 1.58;
+  color: var(--ink-soft);
+  max-width: 60ch;
+  margin: 0;
+}
+.mast .standfirst em { color: var(--ink); font-style: italic; }
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin-top: 30px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.meta b { color: var(--ink-soft); font-weight: 500; }
+
+/* ---------- sections ---------- */
+
+section { margin: 0 0 68px; }
+
+h2 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 27px;
+  letter-spacing: -.017em;
+  line-height: 1.2;
+  margin: 0 0 18px;
+  text-wrap: balance;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+h2 .num {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  letter-spacing: .06em;
+  flex: none;
+  padding-top: 2px;
+}
+
+h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 17.5px;
+  letter-spacing: -.008em;
+  margin: 34px 0 12px;
+  text-wrap: balance;
+}
+
+h4 {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 26px 0 10px;
+}
+
+p { margin: 0 0 15px; max-width: var(--measure); }
+p:last-child { margin-bottom: 0; }
+
+strong { font-weight: 500; font-family: var(--sans); font-size: .97em; }
+a { color: var(--gw); }
+
+ul, ol { max-width: var(--measure); margin: 0 0 15px; padding-left: 1.15em; }
+li { margin-bottom: 7px; }
+li::marker { color: var(--ink-faint); }
+
+code {
+  font-family: var(--mono);
+  font-size: .855em;
+  background: var(--surface-sunk);
+  padding: .12em .38em;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+/* ---------- ownership chips: the spec's central idea, made visible ---------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  vertical-align: 2px;
+}
+.chip.gw  { background: var(--gw-soft);  color: var(--gw); }
+.chip.app { background: var(--app-soft); color: var(--app); }
+
+/* ---------- code blocks ---------- */
+
+.code {
+  margin: 18px 0 22px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-strong);
+  border-radius: 4px;
+  overflow-x: auto;
+  box-shadow: var(--shadow);
+}
+.code.gw  { border-left-color: var(--gw); }
+.code.app { border-left-color: var(--app); }
+
+.code .label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 9px 16px 0;
+}
+.code pre {
+  margin: 0;
+  padding: 10px 16px 15px;
+  font-family: var(--mono);
+  font-size: 12.6px;
+  line-height: 1.62;
+  color: var(--ink);
+  white-space: pre;
+}
+
+/* ---------- callout ---------- */
+
+.note {
+  margin: 22px 0;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  max-width: var(--measure);
+}
+.note p { font-size: 15.5px; }
+.note .h {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 7px;
+}
+
+/* ---------- contract cards ---------- */
+
+.contract {
+  margin: 30px 0;
+  padding: 24px 26px 26px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+}
+.contract > h3 { margin-top: 0; }
+.contract .who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.contract .arrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+/* ---------- tables ---------- */
+
+.tablewrap { overflow-x: auto; margin: 20px 0 24px; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 520px;
+  font-family: var(--sans);
+  font-size: 14px;
+}
+th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 500;
+  padding: 0 16px 9px 0;
+  border-bottom: 1px solid var(--rule-strong);
+}
+td {
+  padding: 11px 16px 11px 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+td code { font-size: .88em; }
+
+/* ---------- scope ladder ---------- */
+
+.ladder { display: grid; gap: 14px; margin: 24px 0; }
+@media (min-width: 800px) { .ladder { grid-template-columns: repeat(3, 1fr); } }
+.rung {
+  padding: 20px 22px 22px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+}
+.rung.v1 { border-top: 3px solid var(--gw); }
+.rung.v2 { border-top: 3px solid var(--rule-strong); }
+.rung.no { border-top: 3px solid var(--app); }
+.rung h4 { margin-top: 0; color: var(--ink); }
+.rung ul { font-family: var(--sans); font-size: 14px; padding-left: 1.05em; margin-bottom: 0; }
+.rung li { color: var(--ink-soft); margin-bottom: 6px; line-height: 1.48; }
+
+/* ---------- diagram ---------- */
+
+figure { margin: 30px 0 34px; }
+figure svg { display: block; width: 100%; height: auto; }
+figcaption {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-top: 12px;
+  line-height: 1.5;
+  max-width: 62ch;
+}
+.diagram-shell {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 26px 22px;
+  overflow-x: auto;
+  box-shadow: var(--shadow);
+}
+
+/* ---------- questions ---------- */
+
+.q {
+  border-top: 1px solid var(--rule);
+  padding: 20px 0 4px;
+  max-width: var(--measure);
+}
+.q:first-of-type { border-top: 2px solid var(--ink); }
+.q h3 { margin-top: 0; }
+
+footer {
+  margin-top: 70px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+:focus-visible { outline: 2px solid var(--gw); outline-offset: 3px; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Design specification &nbsp;·&nbsp; draft 1</p>
+  <h1>Sidecartunnel</h1>
+  <p class="standfirst">A standalone websocket gateway for applications that cannot hold long-lived connections themselves. It terminates sockets, authorizes subscriptions against grants <em>your application issues</em>, and fans messages out across replicas. It never learns your domain model.</p>
+  <div class="meta">
+    <span><b>Runtime</b> single static Go binary</span>
+    <span><b>Bus</b> Redis pub/sub (pluggable)</span>
+    <span><b>Integration</b> HTTP + HMAC, any language</span>
+  </div>
+</header>
+
+<section>
+  <h2><span class="num">01</span> What it is, and what it refuses to be</h2>
+
+  <p>Request/response runtimes — WSGI, Rack, PHP-FPM, CGI — cannot hold thousands of open sockets. The usual escapes are to bolt an async server onto the side of the app, or to rent a hosted realtime service. The first couples your realtime layer to one framework's event loop; the second puts a vendor between you and your own users.</p>
+
+  <p>Sidecartunnel is the third option: a process that owns the sockets and speaks ordinary HTTP to the application. The application publishes by making a POST. It authorizes by answering a question or signing a token. It never imports a websocket library, never runs an event loop, and never changes its deployment model.</p>
+
+  <h4>Non-goals</h4>
+  <ul>
+    <li><strong>Not a message broker.</strong> No durable queues, no delivery receipts, no dead-letter handling. Your database is the source of truth; this is an accelerator in front of it.</li>
+    <li><strong>Not an identity provider.</strong> No user table, no login, no password, no session store.</li>
+    <li><strong>Not a policy engine.</strong> It holds no rules about who may see what, because it holds no concept of what anything <em>is</em>.</li>
+    <li><strong>Not a peer-to-peer relay.</strong> Clients never message each other without the application in the path.</li>
+  </ul>
+
+  <p>Each of those is a feature. They are the reason the whole thing fits in a few thousand lines and can be reasoned about in an afternoon.</p>
+</section>
+
+<section>
+  <h2><span class="num">02</span> The principle everything follows from</h2>
+
+  <div class="note">
+    <p class="h">Load-bearing</p>
+    <p><strong>The gateway enforces. The application decides.</strong> Every authorization answer originates in the application and reaches the gateway as either a signed token or an HTTP response. The gateway's entire security model is: verify a signature, then match a string.</p>
+  </div>
+
+  <p>This is not an aesthetic preference. Any realtime layer that re-derives "who may see this" has become a second copy of your authorization rules, written in a different language, deployed on a different cadence, by someone reading your schema from the outside. The two copies will drift, and the drift will be silent — it produces no error, only a message delivered to the wrong person.</p>
+
+  <p>So the gateway is given <em>grants</em>, never <em>facts</em>. It is told "this connection may subscribe to <code>room-*</code>", not "this user belongs to team 42". It cannot tell you what a team is, and that is precisely what makes it reusable across applications that disagree about everything else.</p>
+
+  <p>Throughout this document, <span class="chip gw">gateway</span> marks what sidecartunnel owns and <span class="chip app">application</span> marks what stays yours.</p>
+</section>
+
+<section>
+  <h2><span class="num">03</span> Topology</h2>
+
+  <figure>
+    <div class="diagram-shell">
+      <svg viewBox="0 0 860 350" role="img" aria-labelledby="topo-title">
+        <title id="topo-title">Browsers connect over websockets to stateless gateway replicas, which exchange messages through Redis pub/sub; the application publishes to the gateway over HTTP and answers its authorization calls.</title>
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- clients -->
+        <g fill="var(--surface-sunk)" stroke="var(--rule-strong)" stroke-width="1">
+          <rect x="8" y="34" width="118" height="40" rx="4"/>
+          <rect x="8" y="86" width="118" height="40" rx="4"/>
+          <rect x="8" y="138" width="118" height="40" rx="4"/>
+        </g>
+        <g font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink-soft)" text-anchor="middle">
+          <text x="67" y="59">browser</text>
+          <text x="67" y="111">browser</text>
+          <text x="67" y="163">mobile</text>
+        </g>
+
+        <!-- gateway replicas -->
+        <g fill="var(--gw-soft)" stroke="var(--gw)" stroke-width="1.5">
+          <rect x="292" y="30" width="176" height="48" rx="4"/>
+          <rect x="292" y="94" width="176" height="48" rx="4"/>
+          <rect x="292" y="158" width="176" height="48" rx="4"/>
+        </g>
+        <g font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--gw)" text-anchor="middle">
+          <text x="380" y="59">sidecartunnel 1</text>
+          <text x="380" y="123">sidecartunnel 2</text>
+          <text x="380" y="187">sidecartunnel N</text>
+        </g>
+        <text x="380" y="20" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-faint)" text-anchor="middle" letter-spacing="1.4">STATELESS REPLICAS</text>
+
+        <!-- redis -->
+        <rect x="292" y="248" width="176" height="46" rx="4" fill="var(--surface-sunk)" stroke="var(--rule-strong)" stroke-width="1"/>
+        <text x="380" y="270" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink-soft)" text-anchor="middle">redis pub/sub</text>
+        <text x="380" y="285" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)" text-anchor="middle">fan-out only — no state</text>
+
+        <!-- app -->
+        <rect x="640" y="78" width="200" height="120" rx="4" fill="var(--app-soft)" stroke="var(--app)" stroke-width="1.5"/>
+        <text x="740" y="124" font-family="IBM Plex Sans, sans-serif" font-size="14" font-weight="600" fill="var(--app)" text-anchor="middle">your application</text>
+        <text x="740" y="146" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--app)" text-anchor="middle">Flask · Django · Rails · PHP</text>
+        <text x="740" y="164" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)" text-anchor="middle">unchanged deployment</text>
+
+        <!-- ws lines -->
+        <g stroke="var(--rule-strong)" stroke-width="1.4" fill="none" color="var(--rule-strong)" marker-end="url(#ar)">
+          <path d="M 130 54 L 286 54"/>
+          <path d="M 130 106 L 286 116"/>
+          <path d="M 130 158 L 286 180"/>
+        </g>
+        <text x="208" y="44" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)" text-anchor="middle">wss</text>
+
+        <!-- bus lines -->
+        <g stroke="var(--gw)" stroke-width="1.2" fill="none" opacity=".65">
+          <path d="M 330 210 L 330 246"/>
+          <path d="M 380 210 L 380 246"/>
+          <path d="M 430 210 L 430 246"/>
+          <path d="M 322 78 L 322 92"/>
+          <path d="M 322 142 L 322 156"/>
+        </g>
+
+        <!-- app lines -->
+        <g stroke="var(--app)" stroke-width="1.5" fill="none" color="var(--app)">
+          <path d="M 634 112 L 474 90" marker-end="url(#ar)"/>
+          <path d="M 474 146 L 634 168" marker-end="url(#ar)"/>
+        </g>
+        <text x="556" y="88" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--app)" text-anchor="middle">POST /publish</text>
+        <text x="556" y="188" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--app)" text-anchor="middle">authorize?</text>
+
+        <line x1="530" y1="14" x2="530" y2="330" stroke="var(--rule)" stroke-width="1" stroke-dasharray="3 5"/>
+        <text x="530" y="326" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-faint)" text-anchor="middle" letter-spacing="1.2">TRUST BOUNDARY</text>
+      </svg>
+    </div>
+    <figcaption>Replicas share nothing. A publish arriving at any replica reaches every subscriber through the bus, so the load balancer needs no sticky sessions and scaling is purely a replica count.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">04</span> Four contracts</h2>
+
+  <p>The entire product is four interfaces. Everything else is implementation detail you should be able to replace without telling anyone.</p>
+
+  <div class="contract">
+    <div class="who"><span class="chip gw">gateway</span><span class="arrow">◄──►</span><span class="chip app">browser</span></div>
+    <h3>C1 · The client protocol</h3>
+    <p>JSON frames over a single websocket. The first frame must be <code>connect</code>; the token travels in the frame body, never the query string, because query strings survive in access logs, proxy logs, and browser history.</p>
+
+    <div class="code gw">
+      <div class="label">client → gateway</div>
+      <pre>{"id": 1, "connect": {"token": "&lt;jwt&gt;", "subs": ["room-9182", "user-7"]}}
+{"id": 2, "subscribe": {"channel": "room-4410"}}
+{"id": 3, "unsubscribe": {"channel": "room-9182"}}
+{"ping": {}}</pre>
+    </div>
+
+    <div class="code gw">
+      <div class="label">gateway → client</div>
+      <pre>{"id": 1, "connect": {"client": "8f2c...", "ping": 25, "subs": {...}}}
+{"push": {"channel": "room-4410", "pub": {"data": {...}, "offset": 91}}}
+{"id": 2, "error": {"code": 103, "message": "permission denied"}}
+{"disconnect": {"code": 3501, "reason": "token expired", "reconnect": true}}</pre>
+    </div>
+
+    <p>Multiplexed: one socket carries every channel, with an integer <code>id</code> correlating replies to commands. Server-initiated pings on a fixed interval, client pongs; a missed pong closes the connection so half-open sockets behind a NAT or a load balancer get reaped rather than accumulating.</p>
+    <p>The browser client is roughly 200 lines: connect, exponential backoff with jitter, a subscription registry it replays after a reconnect, and an event emitter. It ships as a dependency-free ES module.</p>
+  </div>
+
+  <div class="contract">
+    <div class="who"><span class="chip app">application</span><span class="arrow">──►</span><span class="chip gw">gateway</span></div>
+    <h3>C2 · Publishing</h3>
+    <p>An ordinary HTTP POST, authenticated by an HMAC over the body and a timestamp. The secret never crosses the wire, so a leaked log line or a compromised TLS-terminating proxy does not hand over publish rights, and a captured request cannot be replayed outside a narrow window.</p>
+
+    <div class="code app">
+      <div class="label">application → gateway</div>
+      <pre>POST /api/publish
+X-St-Key:       app_live_7f3a
+X-St-Timestamp: 1756612800
+X-St-Signature: hex(HMAC_SHA256(secret, timestamp + "." + body))
+
+{"channels": ["room-4410"], "event": "message.created",
+ "data": {"id": 88123, "body": "..."}, "exclude_client": "8f2c..."}</pre>
+    </div>
+
+    <p><code>exclude_client</code> suppresses the echo to the connection that originated the action, so the sender's own optimistic UI is not overwritten by its own event.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>POST /api/publish</code></td><td>One event to one or many channels</td></tr>
+          <tr><td><code>POST /api/broadcast</code></td><td>Batched publishes in a single round trip</td></tr>
+          <tr><td><code>GET /api/channels</code></td><td>Occupied channels and subscriber counts</td></tr>
+          <tr><td><code>GET /api/presence/{ch}</code></td><td>Current members of a presence channel</td></tr>
+          <tr><td><code>POST /api/disconnect</code></td><td>Immediate revocation — drop a user's connections everywhere</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Roughly fifteen lines to implement in any language, which is the point: the protocol is the product, and a client library is a convenience rather than a dependency.</p>
+  </div>
+
+  <div class="contract">
+    <div class="who"><span class="chip gw">gateway</span><span class="arrow">──►</span><span class="chip app">application</span></div>
+    <h3>C3 · Identity and authorization</h3>
+    <p>Three modes, all producing the same internal structure. An application picks whichever fits how it already authenticates; the gateway cannot tell them apart afterwards.</p>
+
+    <h4>Mode A — token minted by the application</h4>
+    <p>The application signs a short-lived token with the shared secret and hands it to its own frontend however it already passes data — a template variable, a JSON endpoint, a meta tag.</p>
+
+    <div class="code app">
+      <div class="label">token claims</div>
+      <pre>{
+  "sub":      "user-7",
+  "info":     {"name": "Ada", "avatar": "/u/7.png"},
+  "channels": ["room-4410", "room-9182", "user-7", "org-42-*"],
+  "exp":      1756616400,
+  "jti":      "01J8..."
+}</pre>
+    </div>
+
+    <div class="note">
+      <p class="h">The whole trick</p>
+      <p>The <code>channels</code> claim is a list of <strong>glob patterns the application computed using its own authorization code</strong>. The gateway matches strings against it. It does not know what <code>org-42</code> denotes, cannot enumerate valid orgs, and holds no rule that could disagree with the application's — because it holds no rule at all.</p>
+    </div>
+
+    <h4>Mode B — cookie-forward, no token at all</h4>
+    <p>For applications that would rather not mint anything, the gateway forwards the browser's <code>Cookie</code> and <code>Origin</code> headers to an endpoint you expose. The application resolves its own session exactly as it does for any other request and answers with the same shape.</p>
+
+    <div class="code app">
+      <div class="label">gateway → POST /_st/connect &nbsp;·&nbsp; application responds</div>
+      <pre>{"sub": "user-7", "info": {...},
+ "channels": ["room-4410", "user-7"], "expires_in": 3600}</pre>
+    </div>
+
+    <p>This is the mode most existing applications should use. It requires <em>no frontend auth code whatsoever</em> — no token endpoint, no refresh plumbing — and costs one HTTP call per connection, not per message. For a session-cookie application the integration is a single view function.</p>
+
+    <h4>Mode C — per-subscribe callback</h4>
+    <p>Some grants cannot be enumerated in advance: membership that is a database fact, or a set too large to embed in a token. Enabled per namespace, the gateway asks once per subscription and caches the answer for the life of the connection.</p>
+
+    <div class="code app">
+      <div class="label">gateway → POST /_st/subscribe &nbsp;·&nbsp; application responds</div>
+      <pre>→ {"sub": "user-7", "channel": "room-77123", "client": "8f2c..."}
+← {"allow": true, "info": {"role": "moderator"}}</pre>
+    </div>
+
+    <h4>Expiry, refresh, revocation</h4>
+    <p>Grants are a snapshot, so they need an end. Before a token expires the gateway asks the client to refresh; the client fetches a new one, or Mode B re-runs the webhook. If the application now answers differently, the connection is closed. For immediate revocation — an account suspended, a member removed — <code>POST /api/disconnect</code> propagates over the bus and every replica drops that user's sockets. Together these give revocation without an authorization check on the message path.</p>
+  </div>
+
+  <div class="contract">
+    <div class="who"><span class="chip gw">gateway</span><span class="arrow">◄──►</span><span class="chip gw">gateway</span></div>
+    <h3>C4 · The bus</h3>
+    <p>One narrow interface, so the transport is a deployment choice rather than an architectural one.</p>
+
+    <div class="code gw">
+      <div class="label">internal/bus</div>
+      <pre>type Bus interface {
+    Publish(ctx context.Context, channel string, payload []byte) error
+    Subscribe(ctx context.Context, channel string) error
+    Unsubscribe(ctx context.Context, channel string) error
+    Receive() &lt;-chan Message
+}</pre>
+    </div>
+
+    <p>Two implementations at launch: <code>memory</code> for single-node and tests, <code>redis</code> for everything else. A replica subscribes upstream only for channels it actually holds locally, and drops the upstream subscription when the last local subscriber leaves — so a Redis instance carries traffic proportional to active channels, not to the total number ever created.</p>
+    <p>Redis holds no connection state. Presence, when enabled, is the single exception: a hash per channel with TTL'd members, refreshed by the owning replica.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">05</span> Channels and namespaces</h2>
+
+  <p>A channel is an opaque string. A <em>namespace</em> is the prefix before the first separator, and it selects a block of configuration. This is how per-feature behaviour gets expressed without per-application code: a new feature is a config block, not a release.</p>
+
+  <div class="code gw">
+    <div class="label">sidecartunnel.yaml</div>
+    <pre>namespaces:
+  - name: public              # anyone connected may subscribe
+    auth_required: false
+
+  - name: room                # a grant must match
+    auth_required: true
+
+  - name: chat                # membership is a database fact
+    auth_required: true
+    subscribe_callback: true  # Mode C
+    history_size: 100
+    history_ttl: 5m
+
+  - name: desk                # who is online, who is typing
+    auth_required: true
+    presence: true
+    join_leave: true</pre>
+  </div>
+
+  <p>So <code>chat-9182</code> resolves to the <code>chat</code> namespace and inherits its policy. Channels stay human-readable on purpose — they appear in logs, in metrics labels, and in the gateway's own introspection endpoints. Opaque or encoded channel names buy nothing (a name is not a secret, and authorization is what protects the channel) while costing you every ability to debug a delivery problem.</p>
+</section>
+
+<section>
+  <h2><span class="num">06</span> Delivery semantics</h2>
+
+  <p><strong>At-most-once, stated plainly.</strong> A replica restart, a network partition, or a client that was asleep will drop messages. Building at-least-once into the bus means durable per-subscriber cursors, acknowledgements, and redelivery — a broker, with a broker's operational weight, which contradicts everything in section 01.</p>
+
+  <div class="note">
+    <p class="h">The pattern that makes this a non-problem</p>
+    <p>The application already persists whatever it publishes. So the client reconciles rather than the bus guaranteeing: on every reconnect, fetch <code>?since={last_seen_id}</code> and merge. Realtime becomes an accelerator over a database that was always the source of truth — which survives replica restarts, laptop sleep, tunnels, and multi-hour disconnections alike, none of which any redelivery scheme handles well.</p>
+  </div>
+
+  <p>For applications that want to skip the reconnect fetch, a namespace may enable bounded history: a capped Redis stream per channel, with an <code>offset</code> and an <code>epoch</code> so a client can detect that its position was trimmed away and fall back to a full resync. Treat it as an optimization for the common short disconnection, never as durability.</p>
+
+  <h3>Slow consumers</h3>
+  <p>Every connection has a bounded outbound queue. On overflow the connection is closed with a code instructing the client to reconnect and resync — never blocking the fan-out path. This single rule is what keeps one client on a bad train connection from stalling delivery for everyone else in the channel, and it is where naive implementations of this pattern fail.</p>
+</section>
+
+<section>
+  <h2><span class="num">07</span> Inside the binary</h2>
+
+  <div class="code gw">
+    <div class="label">layout</div>
+    <pre>cmd/sidecartunnel/       entry point, flags, signal handling
+internal/config/         YAML + env, namespace rules, app credentials
+internal/proto/          frame encode/decode, error codes
+internal/client/         one connection: reader, writer, subscriptions
+internal/hub/            sharded channel registry, local fan-out
+internal/bus/            Bus interface + memory and redis implementations
+internal/auth/           token verify, HMAC verify, grant matching
+internal/webhook/        connect and subscribe callbacks, with timeouts
+internal/api/            the HTTP surface from C2
+internal/presence/       members, TTL refresh, join/leave
+internal/metrics/        prometheus collectors</pre>
+  </div>
+
+  <p>Per connection: one reader goroutine, one writer goroutine, one buffered outbound channel. The hub is a sharded map — 32 shards, each with its own mutex — because a single lock over every channel is the first thing to melt under a broadcast storm, and sharding is a twenty-line fix that never needs revisiting.</p>
+
+  <p>Grant matching happens on the connection's own goroutine against an in-memory slice of patterns. No lock, no network call, no allocation on the hot path.</p>
+</section>
+
+<section>
+  <h2><span class="num">08</span> Running it</h2>
+
+  <p>A static binary in a scratch image, around 12 MB. No runtime, no interpreter, no sidecar of its own. Configuration by YAML file or environment variables, exhaustively — nothing requires a rebuild.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Concern</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td>Scaling</td><td>Stateless replicas. No sticky sessions — any replica serves any client.</td></tr>
+        <tr><td>Load balancer</td><td>Idle timeout must exceed the ping interval, or the proxy reaps healthy sockets.</td></tr>
+        <tr><td>Rolling deploys</td><td>Graceful drain: stop accepting, send <code>disconnect</code> with <code>reconnect: true</code>, let backoff spread the reconnect storm.</td></tr>
+        <tr><td>Health</td><td><code>/health</code> liveness, <code>/ready</code> gated on bus connectivity.</td></tr>
+        <tr><td>Observability</td><td><code>/metrics</code>: connections, subscriptions per namespace, publish latency, dropped-slow-consumer counter, webhook error rate.</td></tr>
+        <tr><td>Multi-app</td><td>Several <code>(id, key, secret)</code> triples per instance, fully isolated. One gateway can serve unrelated applications.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>That last row is worth separating from a word it collides with: multi-app isolation is <em>the gateway's</em> tenancy, and it has nothing to do with tenancy inside your application. Whether your app has one customer or ten thousand is invisible here, and must stay that way — the moment the gateway models your tenants, section 02 is broken.</p>
+</section>
+
+<section>
+  <h2><span class="num">09</span> Scope</h2>
+
+  <div class="ladder">
+    <div class="rung v1">
+      <h4>v1 — build</h4>
+      <ul>
+        <li>C1 client protocol, C2 publish API</li>
+        <li>Auth modes A and B</li>
+        <li>Redis and memory buses</li>
+        <li>Namespace config, glob grants</li>
+        <li>Refresh, disconnect, drain</li>
+        <li>Metrics, health, browser client</li>
+      </ul>
+    </div>
+    <div class="rung v2">
+      <h4>v2 — once proven</h4>
+      <ul>
+        <li>Mode C subscribe callback</li>
+        <li>Presence and join/leave</li>
+        <li>Bounded history with offsets</li>
+        <li>Channel lifecycle webhooks</li>
+        <li>SSE fallback for locked-down networks</li>
+      </ul>
+    </div>
+    <div class="rung no">
+      <h4>Never</h4>
+      <ul>
+        <li>Message persistence</li>
+        <li>An identity or user store</li>
+        <li>Client-to-client without the app</li>
+        <li>Domain concepts of any kind</li>
+        <li>An admin UI beyond introspection</li>
+      </ul>
+    </div>
+  </div>
+
+  <p>Presence sits in v2 deliberately. It is the one feature that makes the gateway stateful, and it should not be built until the stateless core has run in production long enough to be boring.</p>
+</section>
+
+<section>
+  <h2><span class="num">10</span> Open decisions</h2>
+
+  <div class="q">
+    <h3>Is Mode B the default in the documentation?</h3>
+    <p>Cookie-forward requires no frontend code and suits the target audience — session-based server-rendered applications — but it puts an HTTP call in the connection path and requires the gateway to reach the application. Mode A is faster and looser but pushes token plumbing onto every integrator. My inclination is to lead with B and present A as the optimization.</p>
+  </div>
+
+  <div class="q">
+    <h3>Bidirectional, or receive-only?</h3>
+    <p>Client-to-server messages could ride the socket, but the application must persist and validate them anyway, so the gateway would only be forwarding to an HTTP endpoint the client could have called directly. Receive-only over the socket, send over ordinary HTTP, keeps validation, rate limiting, and moderation in code you already trust — at the cost of one extra request per send.</p>
+  </div>
+
+  <div class="q">
+    <h3>How much does the client library carry?</h3>
+    <p>Reconnect and resubscribe are non-negotiable. Presence state, history replay, and offset tracking could live in the library or be left to the application. The larger it gets, the more it becomes a framework — and the harder it is for anyone to write a second implementation in another language.</p>
+  </div>
+</section>
+
+<footer>
+  Draft 1 · design specification, no implementation yet<br>
+  Nothing in this document names a concept from any particular application. If a future revision does, that revision is wrong.
+</footer>
+
+</div>

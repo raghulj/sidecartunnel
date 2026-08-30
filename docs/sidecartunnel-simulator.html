@@ -1,0 +1,1048 @@
+<title>Sidecartunnel Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400&display=swap">
+
+<style>
+:root {
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunk:#EEF1F5;
+  --ink:#121821; --ink-soft:#55616F; --ink-faint:#8593A2;
+  --rule:#DDE3EA; --rule-strong:#C3CCD6;
+  --gw:#0C6F79;  --gw-soft:#E2F1F2;
+  --app:#96591A; --app-soft:#F6EDE0;
+  --cli:#414D5B; --cli-soft:#E8ECF1;
+  --deny:#B23A2F; --deny-soft:#FAE9E7;
+  --shadow:0 1px 2px rgba(18,24,33,.05), 0 10px 28px -20px rgba(18,24,33,.3);
+  --sans:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --serif:"IBM Plex Serif",ui-serif,Georgia,serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0D1218; --surface:#141B23; --sunk:#1B242E;
+    --ink:#E3E9F0; --ink-soft:#9AA8B7; --ink-faint:#6C7C8C;
+    --rule:#24303B; --rule-strong:#35434F;
+    --gw:#45BAC4;  --gw-soft:#0F2B2E;
+    --app:#D7A055; --app-soft:#2B2317;
+    --cli:#AEBBC8; --cli-soft:#1E262F;
+    --deny:#E8776B; --deny-soft:#2E1A18;
+    --shadow:0 1px 2px rgba(0,0,0,.45), 0 10px 28px -20px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1218; --surface:#141B23; --sunk:#1B242E;
+  --ink:#E3E9F0; --ink-soft:#9AA8B7; --ink-faint:#6C7C8C;
+  --rule:#24303B; --rule-strong:#35434F;
+  --gw:#45BAC4;  --gw-soft:#0F2B2E;
+  --app:#D7A055; --app-soft:#2B2317;
+  --cli:#AEBBC8; --cli-soft:#1E262F;
+  --deny:#E8776B; --deny-soft:#2E1A18;
+  --shadow:0 1px 2px rgba(0,0,0,.45), 0 10px 28px -20px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box;}
+body{background:var(--ground); color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;}
+.wrap{max-width:1240px; margin:0 auto; padding:0 24px 100px;}
+
+/* masthead */
+.mast{padding:60px 0 28px; border-bottom:2px solid var(--ink); margin-bottom:26px;}
+.mast .kicker{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 18px;}
+.mast h1{font-weight:700; font-size:clamp(34px,5.4vw,54px); line-height:1.02; letter-spacing:-.026em; margin:0 0 16px; text-wrap:balance;}
+.mast p{font-family:var(--serif); font-size:18px; line-height:1.6; color:var(--ink-soft); max-width:62ch; margin:0;}
+.legend{display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:24px; font-family:var(--mono); font-size:11.5px; color:var(--ink-faint);}
+.legend span{display:inline-flex; align-items:center; gap:7px;}
+.legend i{width:11px; height:11px; border-radius:3px; display:block;}
+
+h2{font-weight:600; font-size:24px; letter-spacing:-.016em; margin:0 0 8px; text-wrap:balance;}
+h2 .n{font-family:var(--mono); font-size:12px; color:var(--ink-faint); letter-spacing:.06em; margin-right:10px;}
+.lede{color:var(--ink-soft); max-width:70ch; margin:0 0 22px;}
+section{margin-bottom:64px;}
+
+/* scenario chips */
+.scenarios{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px;}
+.sc{font-family:var(--sans); font-size:13px; font-weight:500; color:var(--ink-soft);
+    background:var(--surface); border:1px solid var(--rule); border-radius:20px;
+    padding:7px 15px; cursor:pointer; transition:border-color .12s, color .12s, background .12s;}
+.sc:hover{border-color:var(--rule-strong); color:var(--ink);}
+.sc[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--ground);}
+.sc .idx{font-family:var(--mono); font-size:11px; opacity:.6; margin-right:7px;}
+
+/* main grid */
+.stage{display:grid; gap:18px; grid-template-columns:1fr;}
+@media(min-width:1000px){ .stage{grid-template-columns:minmax(0,1.42fr) minmax(320px,1fr);} }
+
+.panel{background:var(--surface); border:1px solid var(--rule); border-radius:6px; box-shadow:var(--shadow); overflow:hidden;}
+.panel > header{padding:12px 16px; border-bottom:1px solid var(--rule); display:flex; align-items:center; justify-content:space-between; gap:12px;}
+.panel > header h3{margin:0; font-size:12px; font-family:var(--mono); letter-spacing:.11em; text-transform:uppercase; color:var(--ink-faint); font-weight:500;}
+.panel .body{padding:16px;}
+
+/* canvas */
+.canvas{padding:10px 8px 4px; overflow-x:auto;}
+.canvas svg{display:block; width:100%; min-width:660px; height:auto;}
+
+.nd rect{fill:var(--surface); stroke:var(--rule-strong); stroke-width:1.3; transition:fill .2s, stroke .2s;}
+.nd .t1{font-family:var(--sans); font-size:13px; font-weight:600; fill:var(--ink);}
+.nd .t2{font-family:var(--mono); font-size:9.5px; fill:var(--ink-faint);}
+.nd.cli rect{fill:var(--cli-soft); stroke:var(--cli);} .nd.cli .t1{fill:var(--ink);}
+.nd.gwn rect{fill:var(--gw-soft); stroke:var(--gw);}   .nd.gwn .t1{fill:var(--gw);}
+.nd.apn rect{fill:var(--app-soft); stroke:var(--app);} .nd.apn .t1{fill:var(--app);}
+.nd.inf rect{fill:var(--sunk); stroke:var(--rule-strong); stroke-dasharray:4 3;}
+.nd.evl rect{fill:var(--deny-soft); stroke:var(--deny);} .nd.evl .t1{fill:var(--deny);}
+.nd.dim{opacity:.32;}
+.nd.pulse rect{stroke-width:2.6;}
+.nd.pulse.warn rect{stroke:var(--app);}
+.nd.pulse.deny rect{stroke:var(--deny); fill:var(--deny-soft);}
+.nd.off{opacity:.22;}
+
+.wire{fill:none; stroke:var(--rule); stroke-width:1.5;}
+.wire.live{stroke:var(--rule-strong);}
+.wire.hot{stroke:var(--gw); stroke-width:2.2;}
+.wire.hot.warn{stroke:var(--app);}
+.wire.hot.deny{stroke:var(--deny); stroke-dasharray:5 4;}
+.bound{stroke:var(--rule); stroke-width:1; stroke-dasharray:3 5; fill:none;}
+.blabel{font-family:var(--mono); font-size:9.5px; fill:var(--ink-faint); letter-spacing:.11em;}
+
+.pkt rect{fill:var(--gw); stroke:none; rx:4;}
+.pkt text{font-family:var(--mono); font-size:10px; font-weight:600; fill:var(--ground);}
+.pkt.warn rect{fill:var(--app);}
+.pkt.deny rect{fill:var(--deny);}
+.pkt.hidden{display:none;}
+
+/* transport */
+.transport{display:flex; align-items:center; gap:10px; padding:11px 16px; border-top:1px solid var(--rule); background:var(--sunk); flex-wrap:wrap;}
+.btn{font-family:var(--sans); font-size:13px; font-weight:500; color:var(--ink); background:var(--surface);
+     border:1px solid var(--rule-strong); border-radius:5px; padding:6px 13px; cursor:pointer; transition:background .12s, border-color .12s;}
+.btn:hover:not(:disabled){border-color:var(--ink-faint);}
+.btn:disabled{opacity:.4; cursor:not-allowed;}
+.btn.primary{background:var(--gw); border-color:var(--gw); color:#fff; min-width:92px;}
+:root[data-theme="dark"] .btn.primary, :root:not([data-theme="light"]) .btn.primary{color:#06171A;}
+@media(prefers-color-scheme:light){ :root:not([data-theme="dark"]) .btn.primary{color:#fff;} }
+.progress{margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); font-variant-numeric:tabular-nums;}
+.transport label{font-family:var(--mono); font-size:11px; color:var(--ink-faint); display:inline-flex; align-items:center; gap:6px;}
+select{font-family:var(--mono); font-size:11.5px; padding:4px 6px; background:var(--surface); color:var(--ink); border:1px solid var(--rule-strong); border-radius:4px;}
+
+/* step readout */
+.step-title{font-size:16.5px; font-weight:600; letter-spacing:-.012em; margin:0 0 4px; text-wrap:balance;}
+.step-tag{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; padding:3px 8px; border-radius:3px; background:var(--gw-soft); color:var(--gw); display:inline-block; margin-bottom:9px;}
+.step-tag.warn{background:var(--app-soft); color:var(--app);}
+.step-tag.deny{background:var(--deny-soft); color:var(--deny);}
+.frame{margin:12px 0; background:var(--sunk); border:1px solid var(--rule); border-left:3px solid var(--rule-strong); border-radius:4px; overflow-x:auto;}
+.frame.gw{border-left-color:var(--gw);} .frame.app{border-left-color:var(--app);} .frame.deny{border-left-color:var(--deny);}
+.frame pre{margin:0; padding:11px 14px; font-family:var(--mono); font-size:11.8px; line-height:1.62; white-space:pre; color:var(--ink);}
+.note{font-size:14px; color:var(--ink-soft); line-height:1.58; margin:0;}
+.note strong{color:var(--ink); font-weight:600;}
+
+/* state inspector */
+.kv{display:grid; grid-template-columns:auto 1fr; gap:7px 14px; font-size:13px; align-items:baseline;}
+.kv dt{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint);}
+.kv dd{margin:0; font-family:var(--mono); font-size:12px; color:var(--ink); word-break:break-word;}
+.pill{display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:3px; margin:2px 4px 2px 0; background:var(--sunk); border:1px solid var(--rule); color:var(--ink-soft);}
+.pill.gw{background:var(--gw-soft); border-color:transparent; color:var(--gw);}
+.pill.app{background:var(--app-soft); border-color:transparent; color:var(--app);}
+.pill.deny{background:var(--deny-soft); border-color:transparent; color:var(--deny);}
+.status{font-family:var(--mono); font-size:11px; padding:3px 9px; border-radius:3px; letter-spacing:.06em;}
+.status.idle{background:var(--sunk); color:var(--ink-faint);}
+.status.handshaking{background:var(--app-soft); color:var(--app);}
+.status.established{background:var(--gw-soft); color:var(--gw);}
+.status.closed{background:var(--deny-soft); color:var(--deny);}
+
+/* log */
+.log{max-height:190px; overflow-y:auto; font-family:var(--mono); font-size:11.5px; line-height:1.75;}
+.log div{color:var(--ink-soft); padding:1px 0; border-bottom:1px solid transparent;}
+.log div b{color:var(--ink); font-weight:500;}
+.log div.deny b{color:var(--deny);} .log div.warn b{color:var(--app);}
+.log div.cur{color:var(--ink);}
+.log .n{color:var(--ink-faint); margin-right:9px;}
+
+/* interactive widgets */
+.tool{display:grid; gap:18px; grid-template-columns:1fr;}
+@media(min-width:860px){ .tool.two{grid-template-columns:1fr 1fr;} }
+input[type=text]{font-family:var(--mono); font-size:13.5px; width:100%; padding:9px 12px; background:var(--surface); color:var(--ink); border:1px solid var(--rule-strong); border-radius:5px;}
+input[type=range]{width:100%; accent-color:var(--gw);}
+.presets{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;}
+.presets button{font-family:var(--mono); font-size:11px; padding:4px 9px; border-radius:4px; border:1px solid var(--rule); background:var(--surface); color:var(--ink-soft); cursor:pointer;}
+.presets button:hover{border-color:var(--rule-strong); color:var(--ink);}
+.match{display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--rule); font-family:var(--mono); font-size:12.5px;}
+.match:last-child{border-bottom:none;}
+.match .g{flex:1; color:var(--ink);}
+.match .v{font-size:10.5px; letter-spacing:.08em; padding:2px 8px; border-radius:3px;}
+.match .v.y{background:var(--gw-soft); color:var(--gw);}
+.match .v.n{background:var(--sunk); color:var(--ink-faint);}
+.verdict{margin-top:14px; padding:12px 14px; border-radius:5px; font-family:var(--mono); font-size:12.5px;}
+.verdict.y{background:var(--gw-soft); color:var(--gw);}
+.verdict.n{background:var(--deny-soft); color:var(--deny);}
+
+.slider-row{margin-bottom:15px;}
+.slider-row .lab{display:flex; justify-content:space-between; font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); margin-bottom:5px;}
+.slider-row .lab b{color:var(--ink); font-weight:500; font-variant-numeric:tabular-nums;}
+.readout{display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); margin-top:4px;}
+.stat{padding:12px 14px; background:var(--sunk); border:1px solid var(--rule); border-radius:5px;}
+.stat .k{font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:5px;}
+.stat .v{font-family:var(--mono); font-size:21px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; line-height:1.1;}
+.stat .u{font-size:11px; color:var(--ink-faint); font-weight:400;}
+.stat.bad{background:var(--deny-soft); border-color:transparent;} .stat.bad .v, .stat.bad .k{color:var(--deny);}
+.stat.good{background:var(--gw-soft); border-color:transparent;} .stat.good .v, .stat.good .k{color:var(--gw);}
+
+table{border-collapse:collapse; width:100%; min-width:560px; font-size:13.5px;}
+.tw{overflow-x:auto;}
+th{text-align:left; font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); font-weight:500; padding:0 16px 9px 0; border-bottom:1px solid var(--rule-strong);}
+td{padding:10px 16px 10px 0; border-bottom:1px solid var(--rule); vertical-align:top; color:var(--ink-soft); line-height:1.5;}
+td:first-child{color:var(--ink);}
+td code, .note code, .lede code{font-family:var(--mono); font-size:.87em; background:var(--sunk); padding:.1em .36em; border-radius:3px;}
+
+footer{margin-top:56px; padding-top:20px; border-top:1px solid var(--rule); font-family:var(--mono); font-size:11px; color:var(--ink-faint); line-height:1.7;}
+:focus-visible{outline:2px solid var(--gw); outline-offset:2px; border-radius:3px;}
+@media(prefers-reduced-motion:reduce){ *{transition:none !important;} }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Interactive walkthrough &nbsp;·&nbsp; sidecartunnel</p>
+  <h1>How the tunnel works</h1>
+  <p>Nine scenarios, stepped one frame at a time — the handshake, the authorization, the fan-out, and the four ways it goes wrong. Every frame shown is the real wire format.</p>
+  <div class="legend">
+    <span><i style="background:var(--cli)"></i> client</span>
+    <span><i style="background:var(--gw)"></i> gateway</span>
+    <span><i style="background:var(--app)"></i> your application</span>
+    <span><i style="background:var(--deny)"></i> denied / lost</span>
+  </div>
+</header>
+
+<section>
+  <h2><span class="n">01</span>The simulator</h2>
+  <p class="lede">Pick a scenario, then press play or step through it. The panel on the right shows the exact frame on the wire and what the connection knows at that instant.</p>
+
+  <div class="scenarios" id="scenarios" role="group" aria-label="Scenarios"></div>
+
+  <div class="stage">
+    <div>
+      <div class="panel">
+        <div class="canvas">
+          <svg id="svg" viewBox="0 0 1020 420" role="img" aria-labelledby="svgt">
+            <title id="svgt">Network diagram: browsers on the left, two gateway replicas and Redis in the centre, your application on the right.</title>
+
+            <path class="bound" d="M 690 8 L 690 412"/>
+            <text class="blabel" x="694" y="406">TRUST BOUNDARY — SAME PRIVATE NETWORK</text>
+
+            <path id="w_a_gw1"     class="wire" d="M 160 89 L 330 93"/>
+            <path id="w_b_gw2"     class="wire" d="M 160 179 L 330 208"/>
+            <path id="w_e_gw2"     class="wire" d="M 160 284 L 330 208"/>
+            <path id="w_gw1_app"   class="wire" d="M 530 75 L 760 160"/>
+            <path id="w_gw2_app"   class="wire" d="M 530 208 L 760 200"/>
+            <path id="w_gw1_redis" class="wire" d="M 530 110 C 614 134 614 300 534 350"/>
+            <path id="w_gw2_redis" class="wire" d="M 430 241 L 430 330"/>
+            <path id="w_app_redis" class="wire" d="M 870 230 C 870 342 700 392 534 368"/>
+            <path id="w_a_app"     class="wire" d="M 90 60 C 90 8 870 8 870 128"/>
+
+            <g class="nd cli" id="n_browserA">
+              <rect x="20" y="60" width="140" height="58" rx="5"/>
+              <text class="t1" x="90" y="84" text-anchor="middle">Browser A</text>
+              <text class="t2" x="90" y="100" text-anchor="middle">app.example.com</text>
+            </g>
+            <g class="nd cli" id="n_browserB">
+              <rect x="20" y="150" width="140" height="58" rx="5"/>
+              <text class="t1" x="90" y="174" text-anchor="middle">Browser B</text>
+              <text class="t2" x="90" y="190" text-anchor="middle">another user</text>
+            </g>
+            <g class="nd evl dim" id="n_evil">
+              <rect x="20" y="255" width="140" height="58" rx="5"/>
+              <text class="t1" x="90" y="279" text-anchor="middle">evil.example</text>
+              <text class="t2" x="90" y="295" text-anchor="middle">attacker page</text>
+            </g>
+
+            <g class="nd gwn" id="n_gw1">
+              <rect x="330" y="60" width="200" height="66" rx="5"/>
+              <text class="t1" x="430" y="88" text-anchor="middle">sidecartunnel 1</text>
+              <text class="t2" x="430" y="105" text-anchor="middle">stateless replica</text>
+            </g>
+            <g class="nd gwn" id="n_gw2">
+              <rect x="330" y="175" width="200" height="66" rx="5"/>
+              <text class="t1" x="430" y="203" text-anchor="middle">sidecartunnel 2</text>
+              <text class="t2" x="430" y="220" text-anchor="middle">stateless replica</text>
+            </g>
+            <g class="nd inf" id="n_redis">
+              <rect x="330" y="330" width="200" height="62" rx="5"/>
+              <text class="t1" x="430" y="356" text-anchor="middle">Redis</text>
+              <text class="t2" x="430" y="373" text-anchor="middle">pub/sub — fan-out only</text>
+            </g>
+            <g class="nd apn" id="n_app">
+              <rect x="760" y="130" width="210" height="100" rx="5"/>
+              <text class="t1" x="865" y="172" text-anchor="middle">Your application</text>
+              <text class="t2" x="865" y="190" text-anchor="middle">Flask · Django · Rails</text>
+              <text class="t2" x="865" y="205" text-anchor="middle">+ Postgres</text>
+            </g>
+
+            <g id="pkt" class="pkt hidden">
+              <rect x="0" y="-9" width="10" height="18" rx="4"/>
+              <text x="5" y="4" text-anchor="middle">·</text>
+            </g>
+          </svg>
+        </div>
+        <div class="transport">
+          <button class="btn" id="prev" title="Previous step">◀</button>
+          <button class="btn primary" id="play">▶ Play</button>
+          <button class="btn" id="next" title="Next step">▶</button>
+          <button class="btn" id="reset">⟲ Reset</button>
+          <label>speed
+            <select id="speed">
+              <option value="0.6">0.6×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.8">1.8×</option>
+              <option value="3">3×</option>
+            </select>
+          </label>
+          <span class="progress" id="progress">0 / 0</span>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:18px;">
+        <header><h3>Event log</h3></header>
+        <div class="body log" id="log"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <header><h3>On the wire</h3></header>
+        <div class="body">
+          <span class="step-tag" id="stepTag">READY</span>
+          <p class="step-title" id="stepTitle">Choose a scenario and press play</p>
+          <div class="frame" id="frameBox" hidden><pre id="frame"></pre></div>
+          <p class="note" id="note">Each step shows the actual bytes crossing that wire, and why the design puts them there.</p>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:18px;">
+        <header>
+          <h3>Connection state</h3>
+          <span class="status idle" id="connStatus">idle</span>
+        </header>
+        <div class="body">
+          <dl class="kv">
+            <dt>client id</dt><dd id="s_client">—</dd>
+            <dt>user</dt><dd id="s_user">—</dd>
+            <dt>expires</dt><dd id="s_exp">—</dd>
+            <dt>app calls</dt><dd id="s_calls">0</dd>
+            <dt>grants</dt><dd id="s_grants"><span class="pill">none</span></dd>
+            <dt>subscribed</dt><dd id="s_subs"><span class="pill">none</span></dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>Grant matching, hands on</h2>
+  <p class="lede">This is the single idea the whole design rests on. Your application returns a list of glob patterns; the gateway matches subscription requests against them as plain strings. It never learns what any segment <em>means</em>. Type a channel name and watch it resolve.</p>
+
+  <div class="tool two">
+    <div class="panel"><div class="body">
+      <label for="chan" style="font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); display:block; margin-bottom:8px;">Channel the client asks for</label>
+      <input type="text" id="chan" value="org-42-alerts" spellcheck="false" autocomplete="off">
+      <div class="presets" id="presets"></div>
+      <div class="verdict" id="verdict">—</div>
+    </div></div>
+    <div class="panel"><div class="body">
+      <div style="font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:10px;">Grants issued at connect</div>
+      <div id="grantList"></div>
+      <p class="note" style="margin-top:14px; font-size:13px;"><code>*</code> matches any run of characters. Matching happens in memory on the connection's own goroutine — no lock, no network call, no allocation on the hot path.</p>
+    </div></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>The reconnect storm</h2>
+  <p class="lede">The one operational risk this architecture creates that Pusher's does not: every new connection is a synchronous HTTP call into a request/response app with a fixed worker pool. Restart a gateway replica and every client comes back at once. Move the sliders.</p>
+
+  <div class="tool two">
+    <div class="panel"><div class="body">
+      <div class="slider-row">
+        <div class="lab"><span>clients reconnecting</span><b id="l_n">5000</b></div>
+        <input type="range" id="r_n" min="100" max="20000" step="100" value="5000">
+      </div>
+      <div class="slider-row">
+        <div class="lab"><span>backoff jitter window</span><b id="l_j">1 s</b></div>
+        <input type="range" id="r_j" min="1" max="60" step="1" value="1">
+      </div>
+      <div class="slider-row">
+        <div class="lab"><span>gateway webhook concurrency cap</span><b id="l_c">unlimited</b></div>
+        <input type="range" id="r_c" min="0" max="256" step="8" value="0">
+      </div>
+      <div class="slider-row">
+        <div class="lab"><span>app worker processes</span><b id="l_w">16</b></div>
+        <input type="range" id="r_w" min="4" max="128" step="4" value="16">
+      </div>
+      <div class="slider-row" style="margin-bottom:0;">
+        <div class="lab"><span>auth latency per call</span><b id="l_l">40 ms</b></div>
+        <input type="range" id="r_l" min="5" max="400" step="5" value="40">
+      </div>
+    </div></div>
+    <div class="panel"><div class="body">
+      <div class="readout">
+        <div class="stat" id="st_rate"><div class="k">arrival rate</div><div class="v">—</div></div>
+        <div class="stat" id="st_conc"><div class="k">concurrent at app</div><div class="v">—</div></div>
+        <div class="stat" id="st_drain"><div class="k">time to drain</div><div class="v">—</div></div>
+      </div>
+      <p class="note" id="stormNote" style="margin-top:16px;"></p>
+    </div></div>
+  </div>
+
+  <p class="note" style="max-width:74ch; margin-top:18px;"><strong>A correction to something I said earlier:</strong> caching the connect response per session cookie does <em>not</em> protect against this. Five thousand reconnecting users are five thousand distinct cookies, so every one is a cache miss. The cache earns its place against multiple tabs, rapid flapping, and a single user's several devices — real, but secondary. <strong>Jittered backoff in the client and a concurrency cap in the gateway are the actual defenses</strong>, and the sliders show why: widening the jitter window is the single most effective control here.</p>
+</section>
+
+<section>
+  <h2><span class="n">04</span>Frame reference</h2>
+  <p class="lede">The complete client protocol. Nine message types, which is the whole surface a client implementation has to cover.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Direction</th><th>Frame</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>client →</td><td><code>{"id":1,"connect":{}}</code></td><td>First frame. Cookie already travelled in the HTTP upgrade.</td></tr>
+      <tr><td>← gateway</td><td><code>{"id":1,"connect":{client,ping,expires_in}}</code></td><td>Established. <code>ping</code> is the heartbeat interval in seconds.</td></tr>
+      <tr><td>client →</td><td><code>{"id":2,"subscribe":{channel}}</code></td><td>Join a channel. Matched against grants in memory.</td></tr>
+      <tr><td>← gateway</td><td><code>{"id":2,"error":{code,message}}</code></td><td>Refused. <code>103</code> is permission denied.</td></tr>
+      <tr><td>client →</td><td><code>{"id":3,"unsubscribe":{channel}}</code></td><td>Leave. Frees the upstream Redis subscription if last.</td></tr>
+      <tr><td>client →</td><td><code>{"pub":{channel,data}}</code></td><td>Ephemeral client event. Only where the namespace allows it.</td></tr>
+      <tr><td>← gateway</td><td><code>{"push":{channel,pub}}</code></td><td>A message. The only frame that carries application data inbound.</td></tr>
+      <tr><td>← gateway</td><td><code>{"push":{refresh:true}}</code></td><td>Grants near expiry — revalidate now.</td></tr>
+      <tr><td>← gateway</td><td><code>{"disconnect":{code,reason,reconnect}}</code></td><td>Closing. <code>reconnect:false</code> means do not retry.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  Interactive walkthrough · companion to the sidecartunnel design specification<br>
+  Nothing in this page names a concept from any particular application. Channels like <code>room-4410</code> and <code>org-42-*</code> are opaque strings the gateway matches and never interprets.
+</footer>
+
+</div>
+
+<script>
+"use strict";
+
+/* ---------------- scenario data ---------------- */
+
+const BASE = {conn:"idle", client:"—", user:"—", exp:"—", calls:0, grants:[], subs:[]};
+const LIVE = {conn:"established", client:"8f2c1e", user:"u-7", exp:"3600 s",
+              calls:1, grants:["room-4410","user-7","org-42-*"], subs:[]};
+const live = extra => Object.assign({}, LIVE, {grants:LIVE.grants.slice(), subs:[]}, extra||{});
+
+const SCENARIOS = [
+{
+  name:"Connect", init:BASE,
+  steps:[
+    {w:"w_a_gw1", dir:1, tag:"WS UPGRADE", title:"The browser opens the socket",
+     frame:`GET /ws HTTP/1.1
+Host: app.example.com
+Upgrade: websocket
+Origin: https://app.example.com
+Cookie: session=eyJ1c2VyX2lkIjo3fQ...`,
+     note:"Served from the <b>same origin</b> as the app, so the browser attaches the session cookie by itself. There is no authentication code in your frontend — none at all.",
+     set:{conn:"handshaking"}},
+
+    {n:"n_gw1", tag:"ORIGIN CHECK", cls:"", title:"Gateway validates the Origin header",
+     frame:`allowed_origins:
+  - https://app.example.com
+
+Origin: https://app.example.com    ✓ match`,
+     note:"Browsers do <b>not</b> apply CORS to WebSocket handshakes, but they do send cookies. Without this allowlist, any website could open a socket carrying your user's cookie. Scenario 7 shows exactly that."},
+
+    {w:"w_gw1_app", dir:1, tag:"POST /_st/connect", cls:"warn", title:"Gateway asks your app who this is",
+     frame:`POST /_st/connect
+X-St-Origin: https://app.example.com
+X-St-Forwarded-For: 203.0.113.9
+Cookie: session=eyJ1c2VyX2lkIjo3fQ...`,
+     note:"The cookie is forwarded untouched. The gateway cannot read or verify a session, and must never try — that is your app's job and your app's format.",
+     inc:{calls:1}},
+
+    {n:"n_app", tag:"AUTHORIZE", cls:"warn", title:"Your app answers with identity and grants",
+     frame:`user = load_session(request.cookies)   # your existing code
+if not user:
+    return 401
+
+return {
+  "user":     f"u-{user.id}",
+  "channels": grants_for(user),        # your existing authorization
+  "expires_in": 3600,
+}`,
+     note:"This is <b>the only integration point</b>. One view function, reusing the authorization that already guards your HTTP routes."},
+
+    {w:"w_gw1_app", dir:-1, tag:"GRANTS", cls:"warn", title:"Grants come back as opaque patterns",
+     frame:`200 OK
+{"user": "u-7",
+ "channels": ["room-4410", "user-7", "org-42-*"],
+ "expires_in": 3600}`,
+     note:"The gateway has no idea what <code>org-42</code> denotes, cannot enumerate valid orgs, and holds no rule that could ever disagree with yours — because it holds no rule at all.",
+     set:{user:"u-7", exp:"3600 s", grants:["room-4410","user-7","org-42-*"]}},
+
+    {w:"w_a_gw1", dir:-1, tag:"CONNECTED", title:"Tunnel established",
+     frame:`{"id":1,"connect":{"client":"8f2c1e","ping":25,"expires_in":3600}}`,
+     note:"<code>ping</code> is the server's heartbeat interval. A missed pong reaps the connection, so half-open sockets stranded behind a NAT or a load balancer don't accumulate.",
+     set:{conn:"established", client:"8f2c1e"}}
+  ]
+},
+{
+  name:"Subscribe & deny", init:live(),
+  steps:[
+    {w:"w_a_gw1", dir:1, tag:"SUBSCRIBE", title:"Client joins a channel it was granted",
+     frame:`{"id":2,"subscribe":{"channel":"room-4410"}}`,
+     note:"Subscription is per channel. The connection being authenticated does not by itself entitle it to anything."},
+
+    {n:"n_gw1", tag:"MATCH", title:"Glob match against the grant list",
+     frame:`grants:  ["room-4410", "user-7", "org-42-*"]
+channel: "room-4410"
+          └─ exact match on grants[0]      → ALLOW`,
+     note:"In memory, on the connection's own goroutine. No lock, no network call, no allocation."},
+
+    {w:"w_gw1_redis", dir:1, tag:"SUBSCRIBE", title:"Replica subscribes upstream — only if it must",
+     frame:`SUBSCRIBE st:room-4410`,
+     note:"Precise subscribe, never <code>PSUBSCRIBE st:*</code>. A replica subscribes upstream only for channels it actually holds, and drops it when the last local subscriber leaves — so Redis carries traffic proportional to <b>active</b> channels, not to every channel that ever existed."},
+
+    {w:"w_a_gw1", dir:-1, tag:"OK", title:"Subscribed",
+     frame:`{"id":2,"subscribe":{}}`,
+     note:"From here, anything published to <code>st:room-4410</code> reaches this socket.",
+     push:{subs:"room-4410"}},
+
+    {w:"w_a_gw1", dir:1, tag:"SUBSCRIBE", cls:"warn", title:"Now the client asks for something it wasn't granted",
+     frame:`{"id":3,"subscribe":{"channel":"org-99-secret"}}`,
+     note:"A malicious client, or an honest bug. The gateway does not care which."},
+
+    {n:"n_gw1", tag:"NO MATCH", cls:"deny", title:"Every pattern is tested and fails",
+     frame:`grants:  ["room-4410", "user-7", "org-42-*"]
+channel: "org-99-secret"
+
+  room-4410    ✗
+  user-7       ✗
+  org-42-*     ✗   prefix is "org-42-", not "org-99-"
+                                          → DENY`,
+     note:"No database is consulted, because there is nothing to consult. The answer was decided by your app at connect time."},
+
+    {w:"w_a_gw1", dir:-1, tag:"ERROR 103", cls:"deny", title:"Refused",
+     frame:`{"id":3,"error":{"code":103,"message":"permission denied"}}`,
+     note:"<b>This is the check that public channels never had.</b> Knowing a channel's name is not the same as being allowed to read it — which is the whole reason a hosted service's public channels leak across tenants."}
+  ]
+},
+{
+  name:"Server push", init:live({subs:["room-4410"]}),
+  steps:[
+    {n:"n_app", tag:"SOMETHING HAPPENED", cls:"warn", title:"Ordinary application code",
+     frame:`order = Order(total="42.00")
+db.session.add(order)
+db.session.commit()`,
+     note:"No websocket library imported. No event loop. No change to how the app is deployed."},
+
+    {w:"w_app_redis", dir:1, tag:"PUBLISH", cls:"warn", title:"One line to publish",
+     frame:`redis.publish("st:room-4410", json.dumps({
+    "event": "order.created",
+    "data":  {"id": 88123, "total": "42.00"},
+}))`,
+     note:"No HTTP client, no HMAC, no signing, no dependency on the gateway being up. <b>Any</b> process can publish — web worker, background task, cron job, a shell script."},
+
+    {w:"w_gw1_redis", dir:-1, tag:"MESSAGE", title:"Every replica holding the channel receives it"},
+    {w:"w_gw2_redis", dir:-1, tag:"MESSAGE",
+     note:"Neither replica knows the other exists. Redis holds no connection state — it is a fan-out bus and nothing more."},
+
+    {w:"w_a_gw1", dir:-1, tag:"PUSH", title:"Delivered locally by each replica",
+     frame:`{"push":{"channel":"room-4410",
+          "pub":{"event":"order.created",
+                 "data":{"id":88123,"total":"42.00"}}}}`,
+     note:"Fan-out is local to whichever replica holds the socket."},
+
+    {w:"w_b_gw2", dir:-1, tag:"PUSH", title:"…on the other replica too",
+     note:"This is why <b>no sticky sessions are needed</b> and why scaling is purely a replica count. A publish arriving anywhere reaches subscribers everywhere."}
+  ]
+},
+{
+  name:"Typing (ephemeral)", init:live({subs:["room-4410","desk-42"]}),
+  steps:[
+    {w:"w_a_gw1", dir:1, tag:"CLIENT EVENT", title:"A keystroke goes up the socket",
+     frame:`{"pub":{"channel":"desk-42","data":{"typing":true}}}`,
+     note:"Typing indicators, cursors, presence heartbeats — high frequency, zero durability."},
+
+    {n:"n_gw1", tag:"NAMESPACE: desk", title:"The namespace permits client events",
+     frame:`namespaces:
+  - name: desk
+    auth_required:  true
+    client_events:  true      ← fan out without touching the app
+    rate_limit:     10/s per connection`,
+     note:"The gateway fans this out itself. <b>Your app never sees it.</b> A keystroke must not become a request against a worker pool."},
+
+    {w:"w_gw1_redis", dir:1, tag:"PUBLISH"},
+    {w:"w_gw2_redis", dir:-1, tag:"MESSAGE"},
+
+    {w:"w_b_gw2", dir:-1, tag:"PUSH", title:"Straight through to the other client",
+     frame:`{"push":{"channel":"desk-42",
+          "pub":{"data":{"typing":true},"from":"u-7"}}}`,
+     note:"Note the <code>rate_limit</code> above. A socket has none of the browser's built-in per-request limits, so the gateway must impose its own — otherwise one buggy client becomes an amplifier pointed at your app."}
+  ]
+},
+{
+  name:"Sending a message", init:live({subs:["room-4410"]}),
+  steps:[
+    {w:"w_a_app", dir:1, tag:"POST /api/messages", cls:"warn", title:"Durable writes bypass the gateway entirely",
+     frame:`POST /api/messages
+Content-Type: application/json
+X-CSRFToken: 9f2a...
+Cookie: session=...
+
+{"room":"4410","body":"ship it"}`,
+     note:"Ordinary HTTP to your ordinary endpoint. Your CSRF protection, rate limiter, WAF, request logging and validation all apply <b>unchanged</b>. Nothing new to secure."},
+
+    {n:"n_app", tag:"PERSIST", cls:"warn", title:"Written to Postgres first",
+     frame:`INSERT INTO messages (room_id, body, author_id)
+VALUES (4410, 'ship it', 7) RETURNING id;   -- 88124`,
+     note:"Postgres is the source of truth. Always. Realtime is an accelerator sitting in front of it, never a system of record."},
+
+    {w:"w_app_redis", dir:1, tag:"PUBLISH", cls:"warn", title:"Then, and only then, published",
+     frame:`redis.publish("st:room-4410", json.dumps({
+    "event":   "message.created",
+    "data":    {"id": 88124, "body": "ship it"},
+    "exclude": "8f2c1e",
+}))`,
+     note:"<code>exclude</code> names the connection that caused this."},
+
+    {w:"w_gw1_redis", dir:-1, tag:"MESSAGE"},
+
+    {n:"n_gw1", tag:"EXCLUDED", cls:"warn", title:"The sender is skipped",
+     frame:`client 8f2c1e == exclude  →  skip delivery`,
+     note:"Browser A already rendered this optimistically. Without <code>exclude</code>, its own event arrives back and overwrites the local state — a flicker, or a duplicate, depending on how the UI merges."},
+
+    {w:"w_gw2_redis", dir:-1, tag:"MESSAGE"},
+    {w:"w_b_gw2", dir:-1, tag:"PUSH", title:"Everyone else gets it",
+     note:"One extra HTTP request per send, in exchange for keeping every write path you already trust."}
+  ]
+},
+{
+  name:"Expiry & revocation", init:live({subs:["room-4410","org-42-alerts"]}),
+  steps:[
+    {n:"n_gw1", tag:"EXPIRING", cls:"warn", title:"Grants approach their expiry",
+     frame:`expires_in: 60 s remaining  →  revalidate`,
+     note:"Grants are a <b>snapshot</b>, so they need an end. A socket that lives for eight hours must not still be acting on an authorization decision made eight hours ago.",
+     set:{exp:"60 s"}},
+
+    {w:"w_gw1_app", dir:1, tag:"REVALIDATE", cls:"warn", title:"The same webhook runs again",
+     frame:`POST /_st/connect        (same cookie, same endpoint)`,
+     note:"No separate refresh protocol. The connect webhook <em>is</em> the refresh webhook.",
+     inc:{calls:1}},
+
+    {w:"w_gw1_app", dir:-1, tag:"NEW GRANTS", cls:"warn", title:"The answer has changed",
+     frame:`200 OK
+{"user": "u-7",
+ "channels": ["room-4410", "user-7"],     ← org-42-* is gone
+ "expires_in": 3600}`,
+     note:"The user lost access to that org. Your app didn't have to notify anything — it just answers differently next time it is asked.",
+     set:{grants:["room-4410","user-7"], exp:"3600 s"}},
+
+    {n:"n_gw1", tag:"PRUNE", cls:"deny", title:"Subscriptions that no longer match are dropped",
+     frame:`held:  ["room-4410", "org-42-alerts"]
+grants:["room-4410", "user-7"]
+
+  org-42-alerts  →  no longer granted  →  unsubscribe`,
+     note:"Replacing the grant set is not enough; live subscriptions have to be re-tested against it or the socket keeps streaming what the user may no longer see.",
+     pull:{subs:"org-42-alerts"}},
+
+    {n:"n_app", tag:"SUSPENDED", cls:"deny", title:"Now something urgent: the account is disabled",
+     frame:`user.active = False
+db.session.commit()`,
+     note:"Waiting up to an hour for the next revalidation is not acceptable here."},
+
+    {w:"w_app_redis", dir:1, tag:"CONTROL", cls:"deny", title:"Revocation rides the same bus",
+     frame:`redis.publish("st:_control", json.dumps({
+    "action": "disconnect",
+    "user":   "u-7",
+}))`,
+     note:"A reserved control channel keeps this <b>pure Redis</b> — no HTTP admin API, no credential to manage, and it reaches every replica at once."},
+
+    {w:"w_gw1_redis", dir:-1, tag:"DISCONNECT u-7", cls:"deny"},
+
+    {w:"w_a_gw1", dir:-1, tag:"CLOSE", cls:"deny", title:"Socket closed everywhere, immediately",
+     frame:`{"disconnect":{"code":3501,"reason":"revoked","reconnect":false}}`,
+     note:"<code>reconnect:false</code> tells the client this was a decision, not a glitch — so it stops retrying instead of hammering the door.",
+     set:{conn:"closed", grants:[], subs:[]}}
+  ]
+},
+{
+  name:"Hijack attempt", init:BASE, evil:true,
+  steps:[
+    {w:"w_e_gw2", dir:1, tag:"WS UPGRADE", cls:"deny", title:"A logged-in user visits a malicious page",
+     frame:`GET /ws HTTP/1.1
+Host:   app.example.com
+Origin: https://evil.example        ← not your app
+Cookie: session=eyJ1c2VyX2lkIjo3fQ...
+        └─ the victim's, attached by their own browser`,
+     note:"The attacker's page opens a socket to <b>your</b> gateway. The browser attaches your cookie automatically, and <b>CORS does not apply to WebSocket handshakes</b> — there is no preflight, and no same-origin policy to stop it."},
+
+    {n:"n_gw2", tag:"ORIGIN MISMATCH", cls:"deny", title:"The allowlist catches it",
+     frame:`allowed_origins: ["https://app.example.com"]
+Origin:           https://evil.example      ✗ reject`,
+     note:"This check is not optional and not defense in depth — it is <b>the</b> defense."},
+
+    {w:"w_e_gw2", dir:-1, tag:"403", cls:"deny", title:"Rejected at the handshake",
+     frame:`HTTP/1.1 403 Forbidden`,
+     note:"The socket never opens. Modern <code>SameSite=Lax</code> cookie defaults also happen to block this in current browsers, but relying on that alone is a mistake: it fails the moment a cookie is set <code>SameSite=None</code> for an unrelated reason. <b>Without the Origin check, the attacker reads the victim's entire stream in real time.</b>"}
+  ]
+},
+{
+  name:"Replica restart", init:live({subs:["room-4410"]}),
+  steps:[
+    {n:"n_gw1", tag:"SIGTERM", cls:"warn", title:"A replica is rolled during a deploy",
+     frame:`graceful drain:
+  1. stop accepting new connections
+  2. close open sockets with reconnect:true
+  3. exit`,
+     note:"Draining deliberately, rather than dying, is what lets the client's backoff spread the reconnect rather than concentrate it."},
+
+    {w:"w_a_gw1", dir:-1, tag:"CLOSE", cls:"warn", title:"Browser A loses its socket",
+     frame:`{"disconnect":{"code":3000,"reason":"draining","reconnect":true}}`,
+     set:{conn:"closed", subs:[]}},
+
+    {w:"w_app_redis", dir:1, tag:"PUBLISH", cls:"deny", title:"A message is published during the gap",
+     frame:`redis.publish("st:room-4410", {"event":"message.created",
+                                 "data":{"id":88125}})`,
+     note:"Redis pub/sub is <b>at-most-once</b>. Nothing queues this for a client that isn't there. Browser A will never receive message 88125 over the wire — ever."},
+
+    {w:"w_b_gw2", dir:-1, tag:"PUSH", title:"Browser B is unaffected",
+     note:"It is on a different replica, which was never touched."},
+
+    {w:"w_a_gw1", dir:1, tag:"RECONNECT", cls:"warn", title:"Browser A comes back",
+     frame:`backoff: 1s ±jitter → 2s ±jitter → 4s ±jitter → …`,
+     note:"Jittered exponential backoff, never a fixed interval. Fixed retry turns one restart into a synchronised stampede — see the model below.",
+     set:{conn:"established", subs:["room-4410"]}},
+
+    {w:"w_a_app", dir:1, tag:"GET ?since=", title:"And closes the gap from the database",
+     frame:`GET /api/messages?room=4410&since=88124`,
+     note:"Not from the bus. <b>Don't make the bus reliable — make reconciliation cheap.</b>"},
+
+    {w:"w_a_app", dir:-1, tag:"GAP FILLED", title:"Consistent again",
+     frame:`{"messages":[{"id":88125,"body":"…"}]}`,
+     note:"The same code path also covers laptop sleep, tunnel drops and multi-hour disconnections — none of which any redelivery scheme handles gracefully. This is why durable history is an optimization here and never the correctness story."}
+  ]
+},
+{
+  name:"Slow consumer", init:live({subs:["room-4410"]}),
+  steps:[
+    {n:"n_gw2", tag:"QUEUE 12/256", cls:"warn", title:"Browser B stops reading",
+     frame:`TCP window closed — client on a failing connection
+outbound queue: 12 / 256`,
+     note:"A phone going through a tunnel, a laptop suspending mid-frame, a tab throttled to death in the background."},
+
+    {n:"n_gw2", tag:"QUEUE 256/256", cls:"deny", title:"The buffer fills",
+     frame:`outbound queue: 256 / 256   ← full
+next write would block the fan-out path`,
+     note:"Here is the fork in the road. Block, and every other subscriber in the channel waits behind this one client. Drop the message, and the client is silently inconsistent with no way to know."},
+
+    {w:"w_b_gw2", dir:-1, tag:"CLOSE", cls:"deny", title:"So the connection is closed instead",
+     frame:`{"disconnect":{"code":3005,"reason":"slow consumer","reconnect":true}}`,
+     note:"<b>Bounded queue per connection; on overflow, close.</b> The client reconnects and resyncs from the database using the path in the previous scenario — so it ends up consistent, not silently stale."},
+
+    {n:"n_gw1", tag:"UNAFFECTED", title:"Browser A never noticed",
+     note:"This single rule is what stops one client on a bad train connection from stalling delivery for everyone else. It is also where naive implementations of this pattern fail — usually in production, usually at the worst time."}
+  ]
+}
+];
+
+/* ---------------- engine ---------------- */
+
+const $ = id => document.getElementById(id);
+const svg = $("svg"), pkt = $("pkt");
+const pktRect = pkt.querySelector("rect"), pktText = pkt.querySelector("text");
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+let scIdx = 0, stepIdx = 0, playing = false, anim = null, timer = null;
+let state = Object.assign({}, BASE);
+
+function scenario(){ return SCENARIOS[scIdx]; }
+
+/* chips */
+SCENARIOS.forEach((s,i)=>{
+  const b = document.createElement("button");
+  b.className = "sc"; b.type = "button";
+  b.innerHTML = `<span class="idx">${String(i+1).padStart(2,"0")}</span>${s.name}`;
+  b.setAttribute("aria-pressed", i===0 ? "true" : "false");
+  b.onclick = ()=>selectScenario(i);
+  $("scenarios").appendChild(b);
+});
+
+function selectScenario(i){
+  stop();
+  scIdx = i;
+  [...$("scenarios").children].forEach((b,j)=>b.setAttribute("aria-pressed", j===i?"true":"false"));
+  $("n_evil").classList.toggle("dim", !scenario().evil);
+  reset();
+}
+
+function reset(){
+  stop();
+  stepIdx = 0;
+  state = Object.assign({}, scenario().init, {
+    grants:(scenario().init.grants||[]).slice(),
+    subs:(scenario().init.subs||[]).slice()
+  });
+  clearWires(); pkt.classList.add("hidden");
+  $("log").innerHTML = "";
+  $("stepTag").textContent = "READY"; $("stepTag").className = "step-tag";
+  $("stepTitle").textContent = scenario().name + " — press play, or step through";
+  $("frameBox").hidden = true;
+  $("note").innerHTML = "Each step shows the actual bytes crossing that wire, and why the design puts them there.";
+  render();
+}
+
+function clearWires(){
+  svg.querySelectorAll(".wire").forEach(w=>w.className.baseVal = "wire");
+  svg.querySelectorAll(".nd").forEach(n=>{
+    n.classList.remove("pulse","warn","deny");
+  });
+}
+
+/* apply a step's state mutations */
+function applyState(st){
+  if(st.set) for(const k in st.set){
+    const v = st.set[k];
+    state[k] = Array.isArray(v) ? v.slice() : v;
+  }
+  if(st.inc) for(const k in st.inc) state[k] = (state[k]||0) + st.inc[k];
+  if(st.push) for(const k in st.push) if(!state[k].includes(st.push[k])) state[k] = state[k].concat(st.push[k]);
+  if(st.pull) for(const k in st.pull) state[k] = state[k].filter(x=>x!==st.pull[k]);
+}
+
+function render(){
+  const s = state;
+  $("connStatus").textContent = s.conn;
+  $("connStatus").className = "status " + s.conn;
+  $("s_client").textContent = s.client;
+  $("s_user").textContent   = s.user;
+  $("s_exp").textContent    = s.exp;
+  $("s_calls").textContent  = s.calls;
+  $("s_grants").innerHTML = s.grants.length
+    ? s.grants.map(g=>`<span class="pill app">${esc(g)}</span>`).join("")
+    : `<span class="pill">none</span>`;
+  $("s_subs").innerHTML = s.subs.length
+    ? s.subs.map(g=>`<span class="pill gw">${esc(g)}</span>`).join("")
+    : `<span class="pill">none</span>`;
+  $("progress").textContent = `${stepIdx} / ${scenario().steps.length}`;
+  $("prev").disabled = stepIdx === 0;
+  $("next").disabled = stepIdx >= scenario().steps.length;
+}
+
+function esc(s){ return String(s).replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function showStep(st, n){
+  $("stepTag").textContent = st.tag;
+  $("stepTag").className = "step-tag" + (st.cls ? " "+st.cls : "");
+  if(st.title) $("stepTitle").textContent = st.title;
+  if(st.frame){
+    $("frameBox").hidden = false;
+    $("frameBox").className = "frame " + (st.cls==="deny" ? "deny" : st.cls==="warn" ? "app" : "gw");
+    $("frame").textContent = st.frame;
+  } else {
+    $("frameBox").hidden = true;
+  }
+  if(st.note) $("note").innerHTML = st.note.replace(/<b>/g,"<strong>").replace(/<\/b>/g,"</strong>");
+
+  const line = document.createElement("div");
+  line.className = (st.cls||"") + " cur";
+  line.innerHTML = `<span class="n">${String(n).padStart(2,"0")}</span><b>${esc(st.tag)}</b>${st.title ? " — " + esc(st.title) : ""}`;
+  const log = $("log");
+  [...log.children].forEach(c=>c.classList.remove("cur"));
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+/* animate one step; returns a promise */
+function runStep(st, animate){
+  clearWires();
+  const cls = st.cls || "";
+
+  if(st.n){
+    const node = $(st.n);
+    node.classList.add("pulse"); if(cls) node.classList.add(cls);
+    return wait(animate ? 520/speed() : 0);
+  }
+
+  const path = $(st.w);
+  path.className.baseVal = "wire hot " + cls;
+  const len = path.getTotalLength();
+  pktRect.setAttribute("class", "");
+  pkt.setAttribute("class", "pkt " + cls);
+  pktText.textContent = st.tag;
+  const w = Math.max(38, st.tag.length * 6.4 + 16);
+  pktRect.setAttribute("width", w);
+  pktRect.setAttribute("x", -w/2);
+  pktText.setAttribute("x", 0);
+
+  if(!animate || reduced){
+    const p = path.getPointAtLength(st.dir === 1 ? len : 0);
+    pkt.setAttribute("transform", `translate(${p.x},${p.y})`);
+    pkt.classList.add("hidden");
+    return Promise.resolve();
+  }
+
+  pkt.classList.remove("hidden");
+  return new Promise(res=>{
+    const dur = 900 / speed();
+    const t0 = performance.now();
+    cancelAnimationFrame(anim);
+    (function frame(now){
+      let t = Math.min(1, (now - t0)/dur);
+      const e = t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+      const at = st.dir === 1 ? e*len : (1-e)*len;
+      const p = path.getPointAtLength(at);
+      pkt.setAttribute("transform", `translate(${p.x},${p.y})`);
+      if(t < 1) anim = requestAnimationFrame(frame);
+      else { pkt.classList.add("hidden"); res(); }
+    })(t0);
+  });
+}
+
+const speed = () => parseFloat($("speed").value);
+const wait = ms => new Promise(r=>{ timer = setTimeout(r, ms); });
+
+async function advance(animate=true){
+  const steps = scenario().steps;
+  if(stepIdx >= steps.length) return false;
+  const st = steps[stepIdx];
+  stepIdx++;
+  showStep(st, stepIdx);
+  applyState(st);
+  render();
+  await runStep(st, animate);
+  return true;
+}
+
+function gotoStep(target){
+  stop();
+  state = Object.assign({}, scenario().init, {
+    grants:(scenario().init.grants||[]).slice(),
+    subs:(scenario().init.subs||[]).slice()
+  });
+  $("log").innerHTML = "";
+  stepIdx = 0;
+  const steps = scenario().steps;
+  for(let i=0; i<target && i<steps.length; i++){
+    stepIdx++;
+    showStep(steps[i], stepIdx);
+    applyState(steps[i]);
+  }
+  clearWires(); pkt.classList.add("hidden");
+  if(target > 0) runStep(steps[target-1], false);
+  render();
+}
+
+function stop(){
+  playing = false;
+  cancelAnimationFrame(anim);
+  clearTimeout(timer);
+  $("play").textContent = "▶ Play";
+}
+
+async function play(){
+  if(playing){ stop(); return; }
+  if(stepIdx >= scenario().steps.length) gotoStep(0);
+  playing = true;
+  $("play").textContent = "❚❚ Pause";
+  while(playing && stepIdx < scenario().steps.length){
+    await advance(true);
+    if(!playing) break;
+    await wait(680/speed());
+  }
+  if(playing) stop();
+}
+
+$("play").onclick  = play;
+$("next").onclick  = ()=>{ stop(); advance(true); };
+$("prev").onclick  = ()=>{ if(stepIdx>0) gotoStep(stepIdx-1); };
+$("reset").onclick = reset;
+$("speed").onchange = ()=>{};
+
+document.addEventListener("keydown", e=>{
+  if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if(e.key === " "){ e.preventDefault(); play(); }
+  if(e.key === "ArrowRight"){ e.preventDefault(); stop(); advance(true); }
+  if(e.key === "ArrowLeft"){ e.preventDefault(); if(stepIdx>0) gotoStep(stepIdx-1); }
+});
+
+selectScenario(0);
+
+/* ---------------- grant matcher ---------------- */
+
+const GRANTS = ["room-4410","user-7","org-42-*"];
+const PRESETS = ["org-42-alerts","org-42-billing-overdue","org-99-secret","room-4410","room-9182","user-7","user-8","desk-42"];
+
+function globToRe(g){
+  return new RegExp("^" + g.split("*").map(p=>p.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(".*") + "$");
+}
+
+function evalGrants(){
+  const ch = $("chan").value.trim();
+  let any = false;
+  $("grantList").innerHTML = GRANTS.map(g=>{
+    const hit = ch !== "" && globToRe(g).test(ch);
+    if(hit) any = true;
+    return `<div class="match"><span class="g">${esc(g)}</span><span class="v ${hit?"y":"n"}">${hit?"MATCH":"no"}</span></div>`;
+  }).join("");
+  const v = $("verdict");
+  if(ch === ""){ v.className = "verdict"; v.textContent = "—"; return; }
+  v.className = "verdict " + (any ? "y" : "n");
+  v.textContent = any
+    ? `ALLOW  →  {"id":2,"subscribe":{}}`
+    : `DENY   →  {"error":{"code":103,"message":"permission denied"}}`;
+}
+
+PRESETS.forEach(p=>{
+  const b = document.createElement("button");
+  b.type = "button"; b.textContent = p;
+  b.onclick = ()=>{ $("chan").value = p; evalGrants(); };
+  $("presets").appendChild(b);
+});
+$("chan").addEventListener("input", evalGrants);
+evalGrants();
+
+/* ---------------- storm model ---------------- */
+
+const R = {n:$("r_n"), j:$("r_j"), c:$("r_c"), w:$("r_w"), l:$("r_l")};
+
+function storm(){
+  const n = +R.n.value, j = +R.j.value, w = +R.w.value, l = +R.l.value;
+  const cap = +R.c.value === 0 ? Infinity : +R.c.value;
+
+  $("l_n").textContent = n.toLocaleString();
+  $("l_j").textContent = j + " s";
+  $("l_c").textContent = cap === Infinity ? "unlimited" : cap;
+  $("l_w").textContent = w;
+  $("l_l").textContent = l + " ms";
+
+  const rate = n / j;                          // connect attempts per second
+  const wanted = rate * (l/1000);              // concurrency the app is asked for
+  const actual = Math.min(wanted, cap);        // gateway cap applies first
+  const served = Math.min(actual, w);          // app can only run `w` at once
+  const drain = n / (served / (l/1000));       // seconds to work through all of them
+
+  set("st_rate", Math.round(rate).toLocaleString(), "req/s", "");
+  set("st_conc", Math.round(actual).toLocaleString(), "of " + w + " workers",
+      actual > w ? "bad" : "good");
+  set("st_drain", drain < 1 ? drain.toFixed(1) : Math.round(drain).toLocaleString(), "seconds",
+      drain > 30 ? "bad" : "");
+
+  let msg;
+  if(actual > w * 3){
+    msg = `<strong>Outage.</strong> The gateway is asking for ${Math.round(actual)} concurrent authorizations from ${w} workers. Every ordinary request from every other user queues behind them, so the whole application goes down — not just realtime. Widen the jitter window or set a concurrency cap.`;
+  } else if(actual > w){
+    msg = `<strong>Saturated.</strong> ${Math.round(actual)} concurrent authorizations against ${w} workers means normal traffic is now queueing. Survivable, briefly — but this is the moment your users are all reloading.`;
+  } else if(cap !== Infinity && wanted > cap){
+    msg = `<strong>Held back by the cap.</strong> The storm wants ${Math.round(wanted)} concurrent calls; the gateway is releasing ${cap}. The rest wait in the gateway, where waiting is cheap, instead of in your app, where it is not. Clients reconnect over ${Math.round(drain)}s.`;
+  } else {
+    msg = `<strong>Comfortable.</strong> ${Math.round(actual)} concurrent authorizations against ${w} workers. Headroom for ordinary traffic throughout, and everyone is reconnected in ${drain < 1 ? "under a second" : Math.round(drain) + "s"}.`;
+  }
+  $("stormNote").innerHTML = msg;
+}
+
+function set(id, v, u, cls){
+  const el = $(id);
+  el.className = "stat " + (cls||"");
+  el.querySelector(".v").innerHTML = v + ` <span class="u">${u}</span>`;
+}
+
+Object.values(R).forEach(r=>r.addEventListener("input", storm));
+storm();
+</script>

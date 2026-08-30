@@ -1,0 +1,310 @@
+# 04 — Integration
+
+**Normative.** Everything an application must implement to adopt sidecartunnel, and
+everything the gateway promises in return. Three surfaces: one HTTP endpoint the
+application exposes, one Redis contract it publishes on, and an admin API for operators.
+
+Total work on the application side is one view function and one line at each publish site.
+
+## 1. The connect webhook
+
+The single integration point. The gateway calls it to turn a browser's cookie into an
+identity and a set of grants.
+
+### 1.1 Request
+
+```
+POST {app.connect_url}
+Content-Type: application/json
+Cookie:            <verbatim from the client's upgrade request>
+X-St-Origin:       https://app.example.com
+X-St-Forwarded-For: 203.0.113.9
+X-St-User-Agent:   Mozilla/5.0 …
+X-St-Timestamp:    1756612800
+X-St-Nonce:        01J8XYZ...
+X-St-Signature:    <see below>
+
+{"client": "8f2c1e04a7b3d915", "channels_requested": ["room-4410"]}
+```
+
+The `Cookie` header is forwarded **byte for byte**. The gateway does not parse, validate,
+decrypt, or shorten it. It cannot: session formats belong to the application.
+
+The signature covers a **digest of the cookie** as well as the body:
+
+```
+X-St-Signature = HMAC-SHA256(secret,
+      timestamp + "." + nonce + "." + sha256(Cookie header) + "." + sha256(body))
+```
+
+Binding the cookie digest is not decoration. An earlier draft signed only
+`timestamp + "." + body`, and since the body contains nothing but a random client id, an
+attacker who observed **one** signed request — from a proxy log, a packet capture, or the
+application's own request log — could replay those exact signature headers with **their
+own stolen cookie** and receive that victim's user id and full grant list. The signature
+was defending nothing it claimed to.
+
+The application MUST verify the signature and reject a timestamp outside ±300s.
+
+Be clear about what this does not do: **the ±300s window is a replay window.** A signed
+request can be replayed verbatim within it. That is acceptable because the endpoint is
+read-only and idempotent, so a replay returns the same answer to someone who already had
+the bytes. `X-St-Nonce` is emitted so an application that wants exactly-once can cache seen
+nonces for 300s; nothing here requires it.
+
+### 1.2 Response — 200
+
+```json
+{
+  "user": "u-7",
+  "channels": ["room-4410", "user-7", "org-42-*"],
+  "expires_in": 3600,
+  "info": {"name": "Ada"}
+}
+```
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `user` | string | yes | Opaque identifier. Used for revocation targeting and stamped on client events. The gateway never parses it. |
+| `channels` | `[]string` | yes | Glob grants. May be empty — a connection with no grants is legal and simply cannot subscribe to anything. |
+| `expires_in` | int | yes | Seconds until the gateway closes the connection for re-authorization (FR-22). Clamped to `[app.min_expiry, app.max_expiry]`; the clamped value is what the client is told. |
+| `info` | object | no | Opaque. Reserved for presence in a later milestone; ignored today. |
+
+### 1.3 Response — anything else
+
+| Status | Gateway behaviour | Close code | `reconnect` |
+|---|---|---|---|
+| 401, 403 | Refuse the connection | 3003 | **false** |
+| 5xx, timeout, connection error | Refuse the connection | 3000 | **true** |
+| 2xx with an unparseable body | Refuse, log once | 3003 | false |
+
+The 401-vs-5xx distinction is the important one and it is easy to get wrong. A 401 means
+*this user may not connect* and the client must stop asking. A 500 means *I could not tell
+you right now* and the client must come back. Collapsing them either locks users out
+during an app deploy, or turns a revocation into an infinite retry loop against the
+endpoint.
+
+### 1.4 Reference implementation (Flask)
+
+Illustrative only — nothing in this repository depends on Flask.
+
+```python
+import hmac, hashlib, time
+from flask import Blueprint, request, jsonify, abort
+
+bp = Blueprint("sidecartunnel", __name__)
+
+@bp.post("/_st/connect")
+def st_connect():
+    ts    = request.headers.get("X-St-Timestamp", "")
+    nonce = request.headers.get("X-St-Nonce", "")
+    sig   = request.headers.get("X-St-Signature", "")
+    body  = request.get_data()
+
+    # Verify the signature FIRST. Parsing attacker-controlled input before
+    # authenticating it turns a malformed header into an unauthenticated 500,
+    # which the gateway then treats as transient and retries.
+    cookie_digest = hashlib.sha256(request.headers.get("Cookie", "").encode()).hexdigest()
+    signed = f"{ts}.{nonce}.{cookie_digest}.{hashlib.sha256(body).hexdigest()}".encode()
+    expected = hmac.new(WEBHOOK_SECRET, signed, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        abort(403)
+
+    try:
+        skew = abs(time.time() - int(ts))
+    except ValueError:
+        abort(403)
+    if skew > 300:
+        abort(403)
+
+    user = resolve_session(request.cookies)      # your existing code
+    if user is None or not user.active:
+        abort(401)                               # note: 401, not 500
+
+    return jsonify(
+        user=f"u-{user.id}",
+        channels=grants_for(user),               # your existing authorization
+        expires_in=3600,
+    )
+```
+
+`grants_for()` is where the application's own authorization lives. It returns strings. The
+gateway will match them and nothing else.
+
+### 1.5 Concurrency
+
+The gateway caps concurrent webhook calls at `app.webhook_concurrency`. Excess connections
+wait inside the gateway, where waiting is cheap, rather than being issued at an application
+with a fixed worker pool (NFR-4).
+
+Waiting is bounded on both axes. `app.connect_queue` (default 4096) caps how many may wait
+— an unbounded queue is 25,000 half-open sockets each holding a captured cookie — and
+`app.connect_timeout` (default 10s) caps how long any one may wait. Exceeding either closes
+with **3008 and a `retry_after`**, which is retryable. This is deliberate: the earlier
+design let the handshake timeout fire on queued connections and close them with 3001,
+`reconnect: false`, so the mechanism advertised as protecting the application against a
+reconnect storm would have permanently locked out every user caught in one.
+
+Set this deliberately. A reconnect after a replica restart is N simultaneous
+authentications, and N is every connected user. The cap, plus the server-directed
+`retry_after` spread in `03-client-protocol.md` §7.1, are what stand between a rolling
+deploy and an outage.
+
+`app.cache_ttl` defaults to **0, off**. It is worth less than it sounds — N reconnecting
+users are N distinct cookies and therefore N cache misses — and it has a cost: a cached
+entry survives a revocation, so a suspended user who reconnects within the TTL gets their
+pre-revocation grants back. When enabled, any control-channel `disconnect` flushes the
+whole cache, and `app.cookie_names` restricts the key to the session cookie, without which
+`_ga`, `_fbp` and CSRF tokens make two tabs of one user miss each other anyway.
+
+## 2. Publishing over Redis
+
+### 2.1 Channel keys
+
+A gateway channel `room-4410` is the Redis channel `{bus.prefix}room-4410`, prefix
+defaulting to `st:`. One gateway serves one application (see `13-review-findings.md` S1),
+so there is exactly one prefix, configured as `bus.prefix`.
+
+### 2.2 Envelope
+
+```json
+{
+  "event":      "order.created",
+  "data":       {"id": 88123, "total": "42.00"},
+  "exclude":    "8f2c1e04a7b3d915",
+  "id":         "01J8XYZ…"
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `event` | yes | Opaque event name, passed through to the client. |
+| `data` | yes | Opaque payload. Any JSON value. |
+| `exclude` | no | Client id that must not receive this. |
+| `from` | no | Set by the gateway on client events; never set by an application. |
+| `id` | no | Echoed in logs and metrics exemplars for tracing. |
+
+There was an `only_users` field. It is gone: it was a delivery-time authorization filter in
+a design that states delivery-time authorization does not exist, it had no bound, and
+evaluating it meant an O(subscribers × users) scan while holding a shard read lock — 16
+million string comparisons for one plausible digest, blocking every subscribe and close on
+1/32 of all channels. Publish to per-user channels instead.
+
+`exclude` needs the originating connection's client id, which the browser has (from its
+`connect` reply) and the application does not. Send it as **`X-St-Client`** on the write
+request. Each tab has its own client id, which is the point — the other tabs should receive
+the event.
+
+An envelope that is not valid JSON, or is missing `event` or `data`, is dropped and
+counted in `st_messages_dropped_total{reason="malformed"}`.
+
+**Publishing gives you no error channel.** A typo'd channel name is silent forever: Redis
+`PUBLISH` returns a subscriber count that reflects gateway replicas, not end clients, so
+it distinguishes "definitely nobody" from "maybe someone" and nothing more. This is the
+real cost of choosing Redis over an HTTP publish API, and it is why `/channels` exists on
+the admin surface — during development it is the way to find out whether anyone is
+listening to what you think they are.
+
+### 2.3 Publishing (Python)
+
+```python
+import json, redis
+r = redis.from_url(REDIS_URL)
+
+def push(channel, event, data, exclude=None):
+    envelope = {"event": event, "data": data}
+    if exclude:
+        envelope["exclude"] = exclude
+    r.publish(f"st:{channel}", json.dumps(envelope))
+```
+
+No HTTP client, no signing, no dependency on a gateway being up. Safe to call inline in a
+request handler — a local Redis publish is well under a millisecond, unlike the outbound
+HTTPS call a hosted service requires.
+
+## 3. The control channel
+
+Reserved channel `{bus.prefix}_control`, consumed by every replica. Clients can never
+subscribe to it: any channel beginning `_` is refused with error 103.
+
+Control messages are **signed**, and unsigned or stale ones are dropped and counted:
+
+```json
+{"ts": 1756612800, "nonce": "01J8…", "sig": "<HMAC-SHA256(control_secret, ts.nonce.body)>",
+ "action": "disconnect", "user": "u-7", "reason": "account suspended"}
+```
+
+The read-only connect webhook was signed while the operation that can disconnect every
+user on every replica — and, via `refresh`, stampede the application — was not. That
+asymmetry was indefensible. Redis remains a trust boundary for message *publishing*
+(`05-authorization.md` §8); it is no longer one for control.
+
+```json
+{"action": "disconnect",  "user": "u-7", "reason": "account suspended"}
+{"action": "disconnect",  "client": "8f2c1e04a7b3d915"}
+{"action": "refresh",     "user": "u-7"}
+{"action": "unsubscribe", "user": "u-7", "channel": "org-42-*"}
+```
+
+| Action | Effect |
+|---|---|
+| `disconnect` | Close matching connections with 3501, `reconnect: false`. |
+| `refresh` | Close matching connections with 3503, `reconnect: true`, spread over `control.refresh_spread`. They reconnect and re-authorize with a current cookie. |
+| `unsubscribe` | Drop matching subscriptions and send each client an `unsubscribed` push. `channel` may be a glob. |
+
+`user` and `client` are matched **exactly, never as globs**, and every action MUST name
+exactly one of them. An omitted target is a validation error, not "everyone" — otherwise a
+single publish forces 50,000 simultaneous re-authorizations, which is the outage modelled
+in `10-operations.md` §4, available on demand.
+
+`unsubscribe` must notify. Dropping a subscription silently leaves the client's registry
+claiming a channel it will never hear from again, indistinguishable from a quiet channel,
+forever.
+
+Revocation on the bus rather than over HTTP keeps it a one-line call for the application
+and reaches every replica without service discovery.
+
+## 4. Admin API
+
+A **separate listener** on `admin.listen` (default `:9001`), never exposed publicly. This
+covers what a `PUBLISH` cannot express.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | none | Liveness. 200 while the process runs. **Never consults the bus.** |
+| GET | `/ready` | none | Readiness. 503 once the bus has been down longer than `bus.ready_grace`. |
+| GET | `/metrics` | none | Prometheus exposition. |
+| GET | `/channels?prefix=` | bearer | Occupied channels and local subscriber counts. |
+| GET | `/channels/{channel}` | bearer | Subscriber count and user ids for one channel. |
+| POST | `/disconnect` | bearer | `{"user":"u-7"}` or `{"client":"…"}`. Same effect as the control action. |
+
+Bearer token is `admin.token`, compared with `crypto/subtle.ConstantTimeCompare`. When
+unset, the authenticated routes MUST return 404 rather than being open — an accidentally
+unconfigured admin API should look absent, not permissive.
+
+**Never wire `/ready` to a liveness probe.** A Redis restart makes every replica
+unready at once; on a liveness probe that kills every replica simultaneously, drops every
+connection, and converts an eight-second Redis blip into a full application outage as
+50,000 clients re-authorize together. `/health` exists precisely so there is something
+correct to point a liveness probe at. `bus.ready_grace` (default 30s) covers the same case
+for readiness, so a short blip does not pull the whole fleet from the load balancer.
+
+`/channels` reports **this replica's** view. Cluster-wide counts would need a scatter-gather
+across replicas, which is not built (see `12-roadmap.md`).
+
+## 5. Integration checklist
+
+For an application adopting this:
+
+- [ ] Route `/ws` on the same origin to the gateway, with upgrade passthrough and an idle
+      timeout above `server.ping_interval`.
+- [ ] Add the connect webhook. Verify the signature **before parsing anything else**.
+      Return 401 for refusal and let 5xx mean failure — they are not interchangeable.
+- [ ] Send `X-St-Client` on any write whose event should not echo to its own tab.
+- [ ] Decide the grant vocabulary. Channel names are opaque to the gateway but they are
+      your access-control surface — see `06-channels.md` §2.
+- [ ] Replace each realtime publish site with a `redis.publish`.
+- [ ] Add `?since=` reconciliation to any endpoint whose data arrives by push
+      (`07-delivery.md` §2). Without it, every reconnect leaves a silent gap.
+- [ ] Publish a control `disconnect` wherever the application already revokes access.
+- [ ] Put the gateway's `Origin` allowlist in configuration management, not in a Dockerfile.
