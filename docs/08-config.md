@@ -124,8 +124,11 @@ List. See `06-channels.md` §3 for semantics.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `name` | string | — | **Required**, unique. `default` catches separator-less channels. |
-| `auth_required` | bool | `true` | |
+| `name` | string | — | **Required**, unique. A namespace may not be named `default`. |
+
+There is no `auth_required` key. It was cut (`13-review-findings.md` S4) because it
+contradicted FR-5 and reintroduced the public-channel hole. A config that still sets it
+fails to start with a message naming the key, rather than being silently ignored.
 | `client_events` | bool | `false` | M4 |
 | `rate_limit` | string | `10/s` | `<int>/<s\|m>` |
 | `max_message_size` | bytes | inherits | 1–1 MiB |

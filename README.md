@@ -171,6 +171,12 @@ Tests are written before implementations and coverage is gated at **100%** in CI
 | [13-review-findings](docs/13-review-findings.md) | Adversarial review of the spec and what changed |
 | [14-coding-standards](docs/14-coding-standards.md) | **Normative.** TDD, coverage, comments, concurrency rules |
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup, the test-first requirement and the
+coverage gate. [docs/14-coding-standards.md](docs/14-coding-standards.md) is the normative
+version of the same rules.
+
 ## Prior Art
 
 [Centrifugo](https://centrifugal.dev) does everything here and more, including the same cookie-forwarding [connect proxy](https://centrifugal.dev/docs/server/proxy). If it fits, it is the cheaper answer. sidecartunnel exists to be small enough to read in an afternoon.
@@ -179,4 +185,4 @@ Tests are written before implementations and coverage is gated at **100%** in CI
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

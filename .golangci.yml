@@ -1,0 +1,116 @@
+# golangci-lint configuration. Schema v2 (installed: 2.12.2).
+#
+# The rule behind the list: a linter is here because it catches a class of defect this
+# design is specifically exposed to, not because it was available. contextcheck and
+# bodyclose exist for the webhook client, errorlint and nilerr for the 401-vs-5xx
+# distinction that FR-6 turns on, gosec for a process that handles every user's session
+# cookie, and revive's exported rule because docs/14-coding-standards.md makes doc
+# comments on exported identifiers mandatory and a standard nobody enforces is a wish.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose      # an undrained response body leaks a connection from the webhook pool
+    - contextcheck   # a webhook call on context.Background() ignores app.connect_timeout
+    - errcheck
+    - errorlint      # %v on an error loses the wrap chain FR-6's 401-vs-5xx test needs
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr         # returning nil after a non-nil error is how a failed Sync goes quiet
+    - revive
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment orders struct fields by padding. The config tree and the frame
+        # structs are ordered to match docs/08-config.md and docs/03-client-protocol.md,
+        # and matching the normative document is worth more than a few bytes per process.
+        - fieldalignment
+
+    gosec:
+      excludes:
+        # G104 duplicates errcheck, which is stricter here.
+        - G104
+
+    # misspell runs with no locale on purpose. The specification documents mix
+    # "authorization" with "behaviour", so forcing either dialect would flag prose that
+    # deliberately quotes them. Genuine misspellings are still caught.
+
+    revive:
+      severity: error
+      rules:
+        - name: exported
+          # Every exported identifier needs a doc comment starting with its own name.
+          arguments:
+            - checkPrivateReceivers
+            - sayRepetitiveInsteadOfStutters
+        - name: package-comments
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+        - name: bare-return
+        - name: deep-exit
+        - name: early-return
+        - name: unhandled-error
+          arguments:
+            - "fmt.Print"
+            - "fmt.Printf"
+            - "fmt.Println"
+
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Contract stubs panic by design until their package is implemented under TDD. The
+      # standard bans panics outside init and contract stubs; this is the exception, and
+      # it disappears as each package lands.
+      - linters: [revive]
+        text: "deep-exit"
+        path: (^cmd/|/doc\.go$)
+
+      # Test helpers legitimately ignore errors from cleanup and construct fixtures with
+      # weak randomness. Nothing in a test reaches production.
+      - linters: [gosec, errcheck]
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true

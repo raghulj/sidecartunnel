@@ -72,17 +72,12 @@ channels:
 
 namespaces:
   - name: room
-    auth_required: true
 
   - name: user
-    auth_required: true
 
   - name: desk
-    auth_required: true
     client_events: true          # M4
     rate_limit: "10/s"
-
-  - name: default                # channels with no separator
 ```
 
 | Key | Type | Default | Meaning |

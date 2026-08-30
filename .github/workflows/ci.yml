@@ -1,0 +1,125 @@
+name: ci
+
+# docs/11-testing.md §7 sets the gates: vet, staticcheck and `go test -race` on every
+# commit; the integration and failure layers against a real Redis on every pull request.
+# This workflow is that, plus the coverage gate from docs/14-coding-standards.md §3.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The integration layer needs a real Redis. Point it at the service container.
+  ST_BUS__URL: redis://localhost:6379/0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+
+      - name: gofmt
+        # `gofmt -l` prints nothing when everything is formatted, and exits 0 either way,
+        # so the check is on the output rather than the status.
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "not gofmt'd:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26"]
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        # The default client-output-buffer-limit pubsub disconnects a subscriber that
+        # falls behind during a broadcast burst, and the resubscribe leaves it immediately
+        # behind again. That oscillation is stable, not transient, and it would show up
+        # here as a flaky integration test pointing at the wrong system
+        # (docs/13-review-findings.md M8, docs/10-operations.md §3).
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Test with the race detector
+        # -race is not optional on any layer. The concurrency rules in
+        # docs/09-internals.md §4 are exactly the kind of thing that passes review and
+        # fails under the detector.
+        run: go test -race -cover ./...
+
+      - name: Coverage gate
+        # 100% statement coverage per package. Uncovered lines are justified in place with
+        # a "// coverage: <reason>" comment, in the diff, where a reviewer can argue with
+        # them — never in an allowlist here.
+        run: ./scripts/cover.sh coverage.out
+
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.go }}
+          path: coverage.out
+          if-no-files-found: ignore
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Build
+        # Same flags as the release image in docs/10-operations.md §1.
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/sidecartunnel ./cmd/sidecartunnel
+
+      - name: Report binary size
+        # NFR-6 targets a release image under 20 MB. The binary is nearly all of it.
+        run: ls -l bin/sidecartunnel

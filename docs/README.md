@@ -22,12 +22,19 @@ depends on the ones above it.
 
 ## Normative vs. explanatory
 
-Three documents are **normative**. An implementation that disagrees with them is wrong,
+Four documents are **normative**. An implementation that disagrees with them is wrong,
 and a change to behaviour they describe must change them in the same commit:
 
 - [03-client-protocol.md](03-client-protocol.md) — the websocket wire protocol
 - [04-integration.md](04-integration.md) — webhook, Redis contract, control channel, admin API
 - [08-config.md](08-config.md) — configuration keys, defaults, validation
+- [14-coding-standards.md](14-coding-standards.md) — how the code is written and what CI enforces
+
+The first three describe behaviour the outside world can observe. The fourth describes how
+the inside is built, and it is normative for the same reason the others are: people
+implementing packages in parallel against one contract need a single answer to "is this
+test good enough", the same way they need a single answer to "what does close code 3008
+mean".
 
 Everything else explains, justifies, or plans. Where an explanatory document disagrees
 with a normative one, the normative one wins and the other is a bug.
@@ -54,6 +61,7 @@ Markdown.
 | 11 | [testing](11-testing.md) | normative-ish | Required test coverage per milestone |
 | 12 | [roadmap](12-roadmap.md) | explanatory | Milestones, scope ladder, open decisions |
 | 13 | [review-findings](13-review-findings.md) | explanatory | Adversarial review of M0 and what changed because of it |
+| 14 | [coding-standards](14-coding-standards.md) | **normative** | TDD, coverage gate, comments, concurrency, security |
 | — | [AGENTS](AGENTS.md) | normative-ish | How to work in this repository |
 
 ## Status

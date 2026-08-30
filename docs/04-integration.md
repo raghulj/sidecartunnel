@@ -75,7 +75,8 @@ nonces for 300s; nothing here requires it.
 | Status | Gateway behaviour | Close code | `reconnect` |
 |---|---|---|---|
 | 401, 403 | Refuse the connection | 3003 | **false** |
-| 5xx, timeout, connection error | Refuse the connection | 3000 | **true** |
+| queue overflow or `connect_timeout` | Refuse the connection | **3008** | **true** |
+| 5xx, timeout, connection error | Refuse the connection | **3008** | **true** |
 | 2xx with an unparseable body | Refuse, log once | 3003 | false |
 
 The 401-vs-5xx distinction is the important one and it is easy to get wrong. A 401 means

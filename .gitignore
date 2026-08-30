@@ -1,0 +1,31 @@
+# Build output. The leading slash matters: without it, "sidecartunnel" also matches the
+# cmd/sidecartunnel directory and quietly excludes main.go from the repository.
+/bin/
+/dist/
+/sidecartunnel
+
+# Test and coverage artifacts. Deliberately not *.out — protocol conformance fixtures
+# under testdata/ are golden files and belong in the repository.
+*.test
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Go workspace files. A go.work in a repository silently overrides everyone's module
+# resolution, so it stays local.
+go.work
+go.work.sum
+
+# Local configuration. config.yaml holds secrets in practice; the committed example is
+# docs/08-config.md §4.
+/config.yaml
+/config.local.yaml
+*.local.yaml
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

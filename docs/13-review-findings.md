@@ -115,7 +115,8 @@ Backoff only widens after the application has already fallen over.
 
 Server-directed backoff fixes this properly. Every retryable `disconnect` now carries
 `retry_after` in milliseconds, and the gateway spreads it: on drain, uniformly across
-`server.drain_spread` (default 30s). The client MUST honour it, and falls back to full
+`server.drain_spread` (default 60s — raised from 30s when the target scale was set; see
+the addendum below). The client MUST honour it, and falls back to full
 jitter — `rand(0, min(30s, 2^n))`, not the multiplicative form — when it is absent.
 
 The gateway knows how many connections it is dropping. The client does not. Putting the
