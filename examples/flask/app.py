@@ -41,12 +41,21 @@ from flask import (
     url_for,
 )
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-
 # The browser client, served at the path templates/index.html imports it from. A real
 # deployment copies it into the application's static directory instead; this route exists
 # so the example runs from a checkout with nothing copied.
-CLIENT_JS_DIR = REPO_ROOT / "client" / "js"
+#
+# From a checkout, examples/flask/app.py sits three directories below client/js. In the
+# container there is no repository above the application: app.py is /app/app.py and the
+# library is bind-mounted at /client/js, so docker-compose.yml supplies the path through
+# ST_CLIENT_JS_DIR. `.parent` chained is used rather than `.parents[2]`, which raises
+# IndexError on /app/app.py — a path with only two parents.
+_DEFAULT_CLIENT_JS_DIR = (
+    pathlib.Path(__file__).resolve().parent.parent.parent / "client" / "js"
+)
+CLIENT_JS_DIR = pathlib.Path(
+    os.environ.get("ST_CLIENT_JS_DIR") or _DEFAULT_CLIENT_JS_DIR
+)
 
 # docs/04-integration.md §1.1. Both directions: a clock ahead is as much a signal as one
 # behind.
@@ -304,22 +313,25 @@ def control_disconnect(user: str, reason: str) -> None:
     carry a timestamp; unsigned or stale ones are dropped. The target is matched
     exactly, never as a glob, and exactly one of user or client must be named.
 
-    OPEN POINT — confirm against the gateway before relying on this.
+    The envelope carries the action as an opaque JSON *string* in `body`, not as sibling
+    fields, and the signature covers those exact bytes:
 
-        docs/04-integration.md §3 gives the signed input as `ts.nonce.body` and shows an
-        envelope carrying ts, nonce and sig alongside the action fields in one flat
-        object. It does not define `body` at the byte level, and JSON object
-        serialization is not canonical, so a receiver cannot recover the signed bytes
-        from the envelope without a stated rule.
+        {"ts": ..., "nonce": "...", "body": "{\"action\":...}", "sig": "..."}
+        sig = hex HMAC-SHA256(control.secret, ts + "." + nonce + "." + body)
 
-        This implementation signs the canonical JSON of the action fields alone — sorted
-        keys, no whitespace — and merges ts, nonce and sig into the published object. It
-        is one defensible reading of the spec, not a settled one. The gateway is
-        unimplemented (M2), so nothing verifies it yet.
+    The string is what makes the signature verifiable. JSON object serialization is not
+    canonical, so a receiver handed the action as sibling fields cannot recover the bytes
+    the sender signed, and two libraries ordering keys differently produce different
+    signatures for the same message. Nothing is re-serialized here, so no
+    canonicalization rule is needed — `body` is signed and published byte for byte.
 
-        There is no fallback with less ambiguity: POST /disconnect on the admin API
-        covered the same action over a bearer-token call, but the admin API is gone,
-        so this control message is the only door onto revocation now.
+    An earlier version of this function merged the action fields into the envelope
+    alongside ts, nonce and sig. The gateway read `body` as the empty string, verified
+    the signature against those bytes, and dropped every message as unsigned. The failure
+    is silent on both sides: the publish succeeds, and nothing disconnects.
+
+    This control message is the only route onto revocation. The admin API that once
+    carried POST /disconnect is gone.
     """
     action = {"action": "disconnect", "user": user, "reason": reason}
     body = json.dumps(action, sort_keys=True, separators=(",", ":"))
@@ -331,7 +343,7 @@ def control_disconnect(user: str, reason: str) -> None:
         hashlib.sha256,
     ).hexdigest()
 
-    envelope = dict(action, ts=ts, nonce=nonce, sig=sig)
+    envelope = {"ts": ts, "nonce": nonce, "body": body, "sig": sig}
     key = current_app.config["ST_BUS_PREFIX"] + "_control"
     try:
         current_app.config["ST_PUBLISHER"].publish(key, json.dumps(envelope))

@@ -135,8 +135,15 @@ writes. What remains is smaller and has to be read, not scraped:
 | Surface | Carries | Use |
 |---|---|---|
 | Logs, one JSON line per event | `level`, an event message, and the **client id** on every connection-scoped line | The client id ties every line for one connection together (§4.3) |
+| `GET /health` | 200 while the process runs, no body, no credential. **Never consults the bus** | The only correct liveness target. Wiring liveness to `/ready` instead kills the fleet during a Redis restart (`README.md`, Health Checks) |
 | `GET /ready` | `{"ready":bool,"bus_connected":bool,"bus_down_for_seconds":float,"bus_reconnects":int,"draining":bool}`, no credential | This replica's bus state, right now. `bus_reconnects` is cumulative for the process's life — read it by curling twice and comparing |
+| `sidecartunnel healthcheck` | Exit 0 or 1 | The container healthcheck. A loopback `GET /health`, and a subcommand rather than a `curl` line because the release image is distroless: no shell, no curl |
 | Subscribe/unsubscribe log lines | `client`, `channel` | What this replica believes is subscribed. Publishing goes over the bus with no error channel back to the caller, so a publish that reaches nobody and one that reaches ten thousand subscribers look identical without a grep of this log |
+
+That is the entire HTTP surface. Against a running gateway, `/health` and `/ready` answer
+200 and **every other path answers 404** — `/metrics`, `/channels`, `/disconnect` and
+`/admin` included — and there is nothing listening on the port the admin listener used to
+hold. Verified in `16-integration-guide.md` §13.
 
 Neither `/health` nor `/ready` carries a credential. Each leaks only "this process is up"
 and "this process can reach Redis" — what a load balancer needs, and what every health

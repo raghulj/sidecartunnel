@@ -571,10 +571,41 @@ consulted.
 Control messages are **signed** with `control.secret` and carry a timestamp. Unsigned or
 stale messages are dropped and logged; there is no other record of the rejection.
 
+The action travels as an opaque JSON **string** in `body`, not as sibling fields of the
+envelope, and the signature covers those exact bytes:
+
 ```json
-{"ts": 1756612800, "nonce": "01J8…", "sig": "<HMAC-SHA256(control_secret, ts.nonce.body)>",
- "action": "disconnect", "user": "u-7", "reason": "account suspended"}
+{"ts": 1756612800,
+ "nonce": "01J8XYZ...",
+ "body": "{\"action\":\"disconnect\",\"user\":\"u-7\",\"reason\":\"account suspended\"}",
+ "sig": "<hex HMAC-SHA256(control_secret, ts + \".\" + nonce + \".\" + body)>"}
 ```
+
+The receiver verifies over the literal `body` string and only then parses it. The string is
+what makes the signature verifiable at all: JSON object serialization is not canonical, so
+a receiver handed the action as sibling fields cannot recover the bytes the sender signed,
+and two libraries ordering keys differently produce different signatures for the same
+message. Nothing is re-serialized, so no canonicalization rule is needed.
+
+Building the envelope with the action fields merged in fails silently on both sides. The
+gateway reads `body` as the empty string, verifies the signature against those bytes, drops
+the message with `reason=unsigned`, and the publish still succeeds. Nothing disconnects and
+nothing errors. `examples/flask/app.py` had exactly this bug until it was run against the
+gateway; `test_suspend_publishes_a_signed_control_disconnect` now pins the envelope shape.
+
+```python
+action = {"action": "disconnect", "user": user, "reason": reason}
+body = json.dumps(action, sort_keys=True, separators=(",", ":"))
+ts, nonce = int(time.time()), uuid.uuid4().hex
+sig = hmac.new(CONTROL_SECRET, f"{ts}.{nonce}.{body}".encode(), hashlib.sha256).hexdigest()
+
+redis.publish("st:_control",
+              json.dumps({"ts": ts, "nonce": nonce, "body": body, "sig": sig}))
+```
+
+`sort_keys` and `separators` are the sender's own choice, not a contract. The receiver
+never re-serializes, so any serialization of the action works as long as the same bytes are
+both signed and published.
 
 | Action | Effect |
 |---|---|
@@ -587,12 +618,9 @@ exactly one of them. An omitted target is a validation error, not "everyone" —
 single publish forces every connected user to re-authorize at once, which is the outage
 modelled in `10-operations.md` §4.
 
-> **Open point.** `04-integration.md` §3 specifies the signed input as
-> `ts.nonce.body` without defining `body` at the byte level, and the envelope it shows
-> carries `ts`, `nonce` and `sig` alongside the action fields in one flat object. The
-> serialization must be pinned down — canonical JSON of the action fields, key order and
-> separators included — before an application signs against it. `examples/flask/app.py`
-> marks the same point at the call site. Confirm against the gateway implementation.
+The signature is checked before the timestamp. The signature covers the timestamp, so a
+forgery can never be logged as stale, and a `reason=stale` line therefore always means an
+authentic message outside the ±300s window — usually this replica's clock.
 
 ### 8.2 Which Action
 
@@ -919,3 +947,375 @@ full table with thresholds.
 | Reconnect storm | Kill a replica in staging at realistic connection counts | Application request queue stays flat; reconnects spread over `server.drain_spread` |
 | Reconciliation | Kill a replica mid-publish | Reconnected clients hold every message |
 | Deploy | Roll the application | Connections recover; no 401 during the window |
+
+## 13. Running The Reference Stack
+
+[`examples/flask/`](../examples/flask/) is the whole arrangement: the application, the
+gateway, Redis, and a proxy that puts them on one origin. Every command and every line of
+output below was run against it.
+
+### 13.1 Build The Gateway Image
+
+From the repository root:
+
+```sh
+docker build -t sidecartunnel:dev .
+```
+
+| Measure | Value |
+|---|---|
+| Binary | 8.65 MB |
+| Layer over `distroless/static-debian12:nonroot` | 8.66 MB |
+| Image on disk | 18.3 MB |
+| Compressed content | 4.15 MB |
+
+NFR-6 targets under 20 MB. No release has been published, so nothing pulls a tag —
+`examples/flask/docker-compose.yml` builds the gateway from this same `Dockerfile`, and
+`examples/compose/docker-compose.yml` takes the tag from `ST_IMAGE`.
+
+### 13.2 Start The Stack
+
+```sh
+cd examples/flask
+cp .env.example .env
+docker compose up -d --build
+docker compose ps --format 'table {{.Service}}\t{{.Status}}'
+```
+
+```
+SERVICE         STATUS
+caddy           Up 8 seconds
+redis           Up 8 seconds
+sidecartunnel   Up 8 seconds (healthy)
+webapp          Up 8 seconds
+```
+
+| Service | What it is |
+|---|---|
+| `caddy` | The only published port, 8080. Routes `/ws*` to the gateway and everything else to the application. This is what makes them one origin. |
+| `webapp` | Flask under gunicorn, four sync workers. No websocket library, no async worker class. |
+| `sidecartunnel` | The gateway. No published port — reachable only through the proxy. |
+| `redis` | pub/sub on database index 3, with `client-output-buffer-limit pubsub` raised. |
+
+The `.env` copied above carries placeholder secrets. They are long enough to start and are
+obvious placeholders; replace them with `openssl rand -hex 32` before this is reachable from
+anywhere.
+
+### 13.3 Settings That Had To Be Right
+
+Four, and three of them fail silently rather than loudly.
+
+| Setting | Value | What the wrong value does |
+|---|---|---|
+| `ST_NAMESPACES_JSON` | must include `{"name":""}` | The empty name is the namespace separator-less channels resolve to. The demo grants `status`, which has no separator. Without the entry it resolves to no block, fails closed, and is **omitted from the connect reply with no error frame anywhere** — the subscribe simply never happens. Once a list is written the built-in catch-all is not installed, so every namespace in use must be in it. |
+| `client-output-buffer-limit pubsub` | `256mb 64mb 60` | At the default `32mb 8mb 60` Redis evicts the gateway mid-burst and the resubscribe leaves it behind again. Verify with `docker compose exec redis redis-cli config get client-output-buffer-limit`. |
+| Proxy upgrade passthrough | see `examples/flask/Caddyfile` | Caddy's `reverse_proxy` passes `Upgrade` and `Connection`, forwards `Origin` unmodified, and defaults to a 5m idle timeout, already above `ping_interval` (25s). nginx needs `proxy_http_version 1.1`, both `proxy_set_header` lines, and `proxy_read_timeout` above 25s stated explicitly. |
+| Control envelope | `{ts, nonce, body, sig}` | The action goes in `body` as a string (§8.1). Merged into the envelope instead, the gateway verifies against an empty `body`, drops the message as unsigned, and the publish still returns success. Nothing disconnects and nothing errors. |
+
+Only `/ws*` is routed to the gateway. `GET /health` and `GET /ready` share that listener, so
+a proxy rule forwarding `/` would publish both.
+
+### 13.4 The Health Checks
+
+`sidecartunnel healthcheck` is a loopback `GET /health` and needs no shell in the image:
+
+```sh
+docker compose exec sidecartunnel /sidecartunnel healthcheck; echo $?
+```
+
+```
+0
+```
+
+`/ready` is not routed through the proxy, so read it from inside the network:
+
+```sh
+docker run --rm --network flask_default curlimages/curl -s http://sidecartunnel:8000/ready
+```
+
+```json
+{"ready":true,"bus_connected":true,"bus_down_for_seconds":0,"bus_reconnects":0,"draining":false}
+```
+
+### 13.5 The Connect Webhook, Directly
+
+The webhook is an ordinary HTTP route and can be called with the gateway out of the picture.
+Sign as §2.3 says, then vary one input at a time. Against the placeholder secret in
+`.env.example`:
+
+| Request | Status |
+|---|---|
+| Valid signature | **200** `{"channels":["user-7","user-7-*","status","room-4410","room-4411","org-42-*"],"expires_in":21600,"user":"u-7"}` |
+| Bad signature | **403** |
+| Valid signature, but over a **different** `Cookie` | **403** — this is the oracle §2.3 closes |
+| Timestamp 400s in the past | **403** |
+| Signature computed with `control.secret` | **403** — the two secrets are not interchangeable |
+| `X-St-Signature` of `"ü" * 64` | **403**, never 500 |
+| `X-St-Timestamp` of 400 digits | **403**, never 500 |
+
+The last two are the ones that become an unauthenticated retry loop when the verification
+order is wrong (§2.2).
+
+### 13.6 The Whole Flow
+
+The socket parts need a websocket client. This is the browser's behaviour written out:
+the cookie and the `Origin` on the upgrade, `connect` as the first frame, subscriptions
+riding it, `X-St-Client` on the write, and `?since=` after the reconnect.
+
+```sh
+python3 -m pip install websockets requests
+```
+
+```python
+"""Drive the examples/flask stack the way a browser does. python -m pip install websockets requests"""
+import asyncio, json, requests, websockets
+
+ORIGIN, WS = "http://localhost:8080", "ws://localhost:8080/ws"
+
+def login(user_id):
+    s = requests.Session()
+    s.get(f"{ORIGIN}/login/{user_id}", allow_redirects=False)
+    return s, "session=" + s.cookies.get("session")
+
+class Tab:
+    def __init__(self, name, cookie):
+        self.name, self.cookie, self.n, self.pending, self.pushes = name, cookie, 1, {}, []
+    async def open(self):
+        # The cookie and the Origin are what the browser sends on the upgrade by itself.
+        self.ws = await websockets.connect(
+            WS, additional_headers={"Cookie": self.cookie, "Origin": ORIGIN})
+        asyncio.create_task(self._read())
+        return self
+    async def _read(self):
+        try:
+            async for raw in self.ws:
+                print(f"  [{self.name}] <- {raw}", flush=True)
+                f = json.loads(raw)
+                if f.get("push"): self.pushes.append(f["push"])
+                if f.get("id") in self.pending: self.pending.pop(f["id"]).set_result(f)
+        except websockets.ConnectionClosed as e:
+            print(f"  [{self.name}] CLOSED {e.rcvd.code} {e.rcvd.reason!r}", flush=True)
+    async def cmd(self, name, payload):
+        i, self.n = self.n, self.n + 1
+        self.pending[i] = asyncio.get_running_loop().create_future()
+        print(f"  [{self.name}] -> " + json.dumps({"id": i, name: payload}), flush=True)
+        await self.ws.send(json.dumps({"id": i, name: payload}))
+        return await asyncio.wait_for(self.pending[i], 6)
+
+async def main():
+    ada, ada_cookie = login(7)
+    grace, _ = login(8)
+
+    print("\n-- connect: subscriptions ride the first frame --")
+    a = await Tab("A", ada_cookie).open()
+    r = await a.cmd("connect", {"subs": ["room-4410", "user-7", "status"]})
+    client_a = r["connect"]["client"]
+
+    print("\n-- subscribe: allowed, then denied --")
+    await a.cmd("subscribe", {"channel": "room-4411"})      # granted
+    await a.cmd("subscribe", {"channel": "org-99-secret"})  # org-42-* cannot reach it
+    await a.cmd("subscribe", {"channel": "room-4412"})      # archived, so not granted
+    await a.cmd("subscribe", {"channel": "_control"})       # reserved
+
+    print("\n-- a server-side event: Flask commits, publishes, the frame arrives --")
+    print("  POST", grace.post(f"{ORIGIN}/api/rooms/4410/messages",
+                               json={"body": "server-side event"}).text.strip())
+    await asyncio.sleep(0.5)
+
+    print("\n-- a durable write from tab A, with a second tab open --")
+    b = await Tab("B", ada_cookie).open()
+    await b.cmd("connect", {"subs": ["room-4410"]})
+    w = ada.post(f"{ORIGIN}/api/rooms/4410/messages", json={"body": "from tab A"},
+                 headers={"X-St-Client": client_a})
+    print("  POST", w.text.strip())
+    await asyncio.sleep(0.5)
+    print("  echo to the originating tab A:", a.pushes[1:] or "none — suppressed by exclude")
+    print("  delivered to tab B:          ", len(b.pushes), "push")
+
+    print("\n-- reconnect: ?since= closes the gap --")
+    cursor = w.json()["id"]
+    await b.ws.close()
+    grace.post(f"{ORIGIN}/api/rooms/4410/messages", json={"body": "published while B was gone"})
+    b2 = await Tab("B'", ada_cookie).open()
+    await b2.cmd("connect", {"subs": ["room-4410"]})
+    print("  GET ?since=%d ->" % cursor,
+          ada.get(f"{ORIGIN}/api/rooms/4410/messages?since={cursor}").text.strip())
+
+    print("\n-- revocation: a signed control message closes every connection --")
+    print("  POST", ada.post(f"{ORIGIN}/admin/users/7/suspend").text.strip())
+    await asyncio.sleep(1)
+
+asyncio.run(main())
+```
+
+```sh
+python3 drive.py
+```
+
+```
+-- connect: subscriptions ride the first frame --
+  [A] -> {"id": 1, "connect": {"subs": ["room-4410", "user-7", "status"]}}
+  [A] <- {"id":1,"connect":{"client":"1042187c649c01bd","ping":25,"expires_in":21600,"subs":{"room-4410":{},"status":{},"user-7":{}}}}
+
+-- subscribe: allowed, then denied --
+  [A] -> {"id": 2, "subscribe": {"channel": "room-4411"}}
+  [A] <- {"id":2,"subscribe":{}}
+  [A] -> {"id": 3, "subscribe": {"channel": "org-99-secret"}}
+  [A] <- {"id":3,"error":{"code":103,"message":"permission denied"}}
+  [A] -> {"id": 4, "subscribe": {"channel": "room-4412"}}
+  [A] <- {"id":4,"error":{"code":103,"message":"permission denied"}}
+  [A] -> {"id": 5, "subscribe": {"channel": "_control"}}
+  [A] <- {"id":5,"error":{"code":103,"message":"permission denied"}}
+
+-- a server-side event: Flask commits, publishes, the frame arrives --
+  POST {"body":"server-side event","id":1,"room_id":4410,"user_id":8,"user_name":"Grace"}
+  [A] <- {"push":{"channel":"room-4410","pub":{"event":"message.created","data":{"id":1,"room_id":4410,"user_id":8,"user_name":"Grace","body":"server-side event"}}}}
+
+-- a durable write from tab A, with a second tab open --
+  [B] -> {"id": 1, "connect": {"subs": ["room-4410"]}}
+  [B] <- {"id":1,"connect":{"client":"2b07283cd718a47a","ping":25,"expires_in":21600,"subs":{"room-4410":{}}}}
+  POST {"body":"from tab A","id":2,"room_id":4410,"user_id":7,"user_name":"Ada"}
+  [B] <- {"push":{"channel":"room-4410","pub":{"event":"message.created","data":{"id":2,"room_id":4410,"user_id":7,"user_name":"Ada","body":"from tab A"}}}}
+  echo to the originating tab A: none — suppressed by exclude
+  delivered to tab B:           1 push
+
+-- reconnect: ?since= closes the gap --
+  [A] <- {"push":{"channel":"room-4410","pub":{"event":"message.created","data":{"id":3,"room_id":4410,"user_id":8,"user_name":"Grace","body":"published while B was gone"}}}}
+  [B'] -> {"id": 1, "connect": {"subs": ["room-4410"]}}
+  [B'] <- {"id":1,"connect":{"client":"3ca56352693ebaff","ping":25,"expires_in":21600,"subs":{"room-4410":{}}}}
+  GET ?since=2 -> {"has_more":false,"latest_id":3,"messages":[{"body":"published while B was gone","id":3,"room_id":4410,"user_id":8,"user_name":"Grace"}]}
+
+-- revocation: a signed control message closes every connection --
+  POST {"active":false,"user":"u-7"}
+  [B'] <- {"disconnect":{"code":3501,"reason":"account suspended","reconnect":false}}
+  [A] <- {"disconnect":{"code":3501,"reason":"account suspended","reconnect":false}}
+  [B'] CLOSED 3501 'account suspended'
+  [A] CLOSED 3501 'account suspended'
+```
+
+Line by line:
+
+| Line | What it shows |
+|---|---|
+| `connect` reply carries `client`, `ping`, `expires_in`, `subs` | The webhook resolved the cookie and returned grants. Nothing in the page sent a token. |
+| `room-4411` allowed | Granted by `readable_room_ids`, the same predicate that guards the HTTP route. |
+| `org-99-secret`, `room-4412`, `_control` all **103** | `org-42-*` does not reach `org-99-`; 4412 is archived so it was never granted; `_` is reserved before grants are consulted. |
+| The `push` after Grace's POST | Flask committed, called `redis.publish`, and the frame reached a client that never spoke to Redis. |
+| `echo to the originating tab A: none` | `X-St-Client` became `exclude` in the envelope. Tab B, the same user, still received it. |
+| `GET ?since=2` returns the message published while B was gone | The gap a reconnect always implies, closed from the database rather than from the bus. |
+| Both tabs close **3501** after the suspend | One signed publish to `st:_control`, every replica, under a second. |
+
+A connect attempt after the suspend is refused **3003 `reconnect: false`** rather than
+retried — the webhook answered 401, which is a statement about the user (§3). Recover the
+demo database with `docker compose up -d --force-recreate webapp`.
+
+### 13.7 The Client Library, Against The Live Gateway
+
+The driver above is hand-rolled framing. `client/js/sidecartunnel.js` is what a page
+actually loads, and it can be pointed at the same gateway from Node by injecting a
+`WebSocket` that carries the cookie and the `Origin` the browser would send by itself:
+
+```js
+import WS from 'ws';
+import { connect } from './client/js/sidecartunnel.js';
+
+class Sock extends WS {
+  constructor(url) { super(url, { headers: { Cookie: cookie, Origin: ORIGIN } }); }
+}
+
+const st = connect({ url: 'ws://localhost:8080/ws', WebSocket: Sock,
+                     onReconnect: reconcile });
+st.subscribe('room-4410', render).catch((e) => console.warn(e.code));
+```
+
+A gateway restart, with a `?since=` reconcile wired to `onReconnect`:
+
+```
+  state: open {"clientId":"b388c6c4df4f3a50","channels":["room-4410"]}
+  reconcile -> +0 rows, cursor=0
+
+-- restart the gateway --
+  state: connecting {"attempt":1,"delay":45134,"retryAfter":45134,"code":3000,"reason":"draining"}
+
+-- publish while the client is disconnected --
+  POST -> 201 {"body":"sent during the gap","id":1,"room_id":4410,"user_id":7,"user_name":"Ada"}
+  rendered so far: []
+
+  t=10s state=connecting channels=["room-4410"]
+  t=40s state=connecting channels=["room-4410"]
+  state: open {"clientId":"9f83b6e5c5ad2a51","channels":["room-4410"]}
+  onReconnect: {"attempt":1,"connections":2,"channels":["room-4410"],"denied":[]}
+  reconcile -> +1 rows, cursor=1
+
+final: state= open stats= {"connections":2,"reconnects":1,"orphanPushes":0,"malformed":0}
+rendered: ["sent during the gap"]
+```
+
+Five obligations discharged by the library rather than by the page. It waited **45 seconds**
+because the gateway told it to — `retry_after` from `drain_spread`, not its own backoff. It
+kept `room-4410` in its registry across a connection that no longer existed and replayed it
+in the next `connect` frame's `subs`. It fired `onReconnect` once the reply landed, which is
+where the `?since=` fetch belongs. And the message published while the socket was down was
+rendered from the database, not from the bus.
+
+A denied channel is reported to the caller and dropped rather than replayed forever:
+
+```
+  onReconnect: {"connections":1,"channels":["room-4410"],"denied":["org-99-secret"]}
+  refused org-99-secret: 103 permission denied
+```
+
+The library's own suite is 52 tests with no gateway:
+
+```sh
+cd client/js && node --test
+```
+
+```
+# tests 52
+# pass 52
+# fail 0
+```
+
+### 13.8 The Failure Modes, Deliberately
+
+| Command | Observed |
+|---|---|
+| `docker compose stop redis` | Sockets stay **open and silent** for the whole outage. `/sidecartunnel healthcheck` still exits 0 — liveness never consults the bus. After `docker compose start redis` the **same** socket resumes receiving pushes; it was never closed. |
+| `docker compose restart sidecartunnel` | `{"disconnect":{"code":3000,"reason":"draining","reconnect":true,"retry_after":12324}}` — milliseconds, drawn per connection from `drain_spread` (**60s**), so 10,000 clients do not return at once. Across the runs here it landed between 12s and 45s. Reconnected clients hold every message sent during the gap, through `?since=` (§13.7). |
+| A socket held idle for 70s | Still open through the proxy, and an application-level `ping` answers `{"pong":{}}`. Proves the proxy's idle timeout is above `ping_interval`. |
+| `Origin: https://evil.example.com` on the upgrade | HTTP **403**, before any webhook call. A missing `Origin` is also 403. |
+| `/login/9` (a suspended seed user) | **3003 `reconnect: false`**. `docker compose logs webapp` shows `"POST /_st/connect HTTP/1.1" 401`. |
+
+### 13.9 What Is Subscribed
+
+Publishing has no error channel, so the gateway's own log is the answer:
+
+```sh
+docker compose logs sidecartunnel | grep '"msg":"subscribe"' | grep room-4410
+```
+
+```
+sidecartunnel-1  | {"time":"...","level":"INFO","msg":"subscribe","client":"1042187c649c01bd","channel":"room-4410"}
+sidecartunnel-1  | {"time":"...","level":"INFO","msg":"subscribe","client":"2b07283cd718a47a","channel":"room-4410"}
+```
+
+Two clients, two ids. A channel nobody holds produces no line at all, which is the
+difference between a typo and a quiet room.
+
+### 13.10 The Application Test Suite
+
+The application side needs neither Redis nor a gateway:
+
+```sh
+cd examples/flask
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+pytest -q
+```
+
+```
+..................................................                       [100%]
+50 passed in 0.45s
+```
+

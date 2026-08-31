@@ -518,19 +518,27 @@ def test_suspend_publishes_a_signed_control_disconnect(app, client, publisher):
     envelope = json.loads(payload)
 
     assert key == "st:_control"
-    assert envelope["action"] == "disconnect"
-    assert envelope["user"] == "u-8"           # exact, never a glob
-    assert "client" not in envelope            # exactly one target must be named
+
+    # The action travels as an opaque JSON string in `body`, never as sibling fields of
+    # the envelope, and the signature covers those exact bytes (docs/04-integration.md
+    # §3). A receiver handed sibling fields cannot recover the bytes the sender signed,
+    # because JSON object serialization is not canonical. The gateway reads `body` and
+    # nothing else: with the action merged into the envelope it verifies against the
+    # empty string, drops the message as unsigned, and nothing disconnects.
+    assert set(envelope) == {"ts", "nonce", "body", "sig"}
     assert abs(time.time() - envelope["ts"]) < 5
     assert envelope["nonce"]
 
-    body = json.dumps({"action": "disconnect", "user": "u-8",
-                       "reason": envelope["reason"]},
-                      sort_keys=True, separators=(",", ":"))
-    expected = hmac.new(CONTROL_SECRET,
-                        f"{envelope['ts']}.{envelope['nonce']}.{body}".encode(),
-                        hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        CONTROL_SECRET,
+        f"{envelope['ts']}.{envelope['nonce']}.{envelope['body']}".encode(),
+        hashlib.sha256).hexdigest()
     assert hmac.compare_digest(expected, envelope["sig"])
+
+    action = json.loads(envelope["body"])
+    assert action["action"] == "disconnect"
+    assert action["user"] == "u-8"             # exact, never a glob
+    assert "client" not in action              # exactly one target must be named
 
 
 def test_a_suspended_user_is_refused_on_the_next_connect(app, client, hook):
@@ -550,10 +558,9 @@ def test_control_signing_uses_the_control_secret_not_the_webhook_secret(app, pub
         control_disconnect("u-7", "test")
 
     envelope = json.loads(publisher.published[-1][1])
-    body = json.dumps({"action": "disconnect", "user": "u-7", "reason": "test"},
-                      sort_keys=True, separators=(",", ":"))
     with_webhook_secret = hmac.new(
-        WEBHOOK_SECRET, f"{envelope['ts']}.{envelope['nonce']}.{body}".encode(),
+        WEBHOOK_SECRET,
+        f"{envelope['ts']}.{envelope['nonce']}.{envelope['body']}".encode(),
         hashlib.sha256).hexdigest()
 
     assert envelope["sig"] != with_webhook_secret

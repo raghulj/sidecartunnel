@@ -13,4 +13,9 @@ EXPOSE 5000
 
 # A fixed worker pool, which is the premise of the design. Four workers is also why a
 # nonce cache must live in Redis rather than in a process-local dict.
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "app:create_app()"]
+#
+# --access-logfile - puts the request log on stdout, where `docker compose logs webapp`
+# finds it. Without it the connect webhook fires invisibly and there is nothing to grep
+# when a connection is being refused.
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", \
+     "--access-logfile", "-", "app:create_app()"]

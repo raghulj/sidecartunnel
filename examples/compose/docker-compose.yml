@@ -10,10 +10,14 @@ name: sidecartunnel-example
 
 services:
   sidecartunnel:
-    image: ghcr.io/raghulj/sidecartunnel:latest
     # Pin a released tag — `:vX.Y.Z` — before running this anywhere real. No release has
-    # been cut yet; until one is, build the image locally with `docker build -t
-    # sidecartunnel:dev .` from the repository root and point this line at it.
+    # been cut yet, so `:latest` does not resolve and `docker compose up` fails with
+    # `manifest unknown`. Until one is cut, build the image from the repository root and
+    # point ST_IMAGE at it:
+    #
+    #     docker build -t sidecartunnel:dev .
+    #     ST_IMAGE=sidecartunnel:dev docker compose up -d
+    image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:latest}
 
     environment:
       # Exact origins, no wildcards. Startup fails if this is empty.
@@ -121,6 +125,12 @@ services:
     # PLACEHOLDER for the application. Replace this with your own image — the one that
     # serves POST /_st/connect and publishes to Redis. Nothing about it is
     # sidecartunnel-specific beyond those two things.
+    #
+    # As a placeholder it answers nothing: nginx listens on 80, ST_APP__CONNECT_URL above
+    # names port 5000, and every connect therefore closes 3008 with reconnect:true. The
+    # gateway itself starts, reports healthy and holds its bus subscription throughout,
+    # which is what this file is here to demonstrate. examples/flask is the runnable
+    # end-to-end stack.
     image: nginx:1.27-alpine
 
     environment:

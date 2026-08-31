@@ -1,11 +1,10 @@
 # app + gateway + redis + a proxy that puts them on one origin.
 #
-#     cp .env.example .env && $EDITOR .env && docker compose up
+#     cp .env.example .env && $EDITOR .env && docker compose up --build
 #     open http://localhost:8080
 #
-# The gateway is not implemented yet (docs/12-roadmap.md M1/M2), so the sidecartunnel
-# service will not start until it is. Everything on the application side — the webhook,
-# the publish, ?since=, revocation — runs and is tested without it.
+# Open the page in two tabs. A message sent in one arrives in the other over the
+# websocket. docs/16-integration-guide.md walks the same flow from the command line.
 
 services:
   caddy:
@@ -19,6 +18,11 @@ services:
   webapp:
     build: .
     env_file: .env
+    environment:
+      # Where the bind mount below lands. app.py defaults to the checkout layout —
+      # three directories above examples/flask/app.py — which does not exist inside the
+      # image, where app.py is /app/app.py.
+      ST_CLIENT_JS_DIR: /client/js
     volumes:
       # The client library, at the path templates/index.html imports it from. A real
       # application copies sidecartunnel.js into its own static directory instead.
@@ -32,8 +36,8 @@ services:
       context: ../..
       dockerfile: Dockerfile
     environment:
-      # docs/08-config.md §3. One app block; the ST_APP__0__* form in
-      # docs/10-operations.md §3 is left over from multi-app, which was cut.
+      # docs/08-config.md §3. One app block: multi-app was cut, so there is no index in
+      # these names. ST_ prefix, __ for nesting.
       ST_SERVER__ALLOWED_ORIGINS: "${ST_ALLOWED_ORIGINS}"
       ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"
       ST_APP__WEBHOOK_SECRETS: "${ST_WEBHOOK_SECRETS}"
@@ -43,7 +47,13 @@ services:
       # Lists of objects cannot be expressed in environment variables, so namespaces
       # needs the YAML file or this. With neither, a built-in default block catches
       # every channel and subscribes still succeed.
-      ST_NAMESPACES_JSON: '[{"name":"room"},{"name":"user"},{"name":"org"}]'
+      #
+      # The fourth entry, the empty name, is the reserved namespace separator-less
+      # channels resolve to (docs/08-config.md §3). The demo grants `status`, which has
+      # no separator; without this entry it resolves to no block, fails closed, and is
+      # omitted from the connect reply with no error anywhere. Once a list is written
+      # the built-in catch-all is not installed, so every namespace in use must appear.
+      ST_NAMESPACES_JSON: '[{"name":"room"},{"name":"user"},{"name":"org"},{"name":""}]'
       ST_LOG__LEVEL: "debug"
     depends_on: [redis]
     # No ports: block. The websocket is reached through the caddy proxy above, same-origin

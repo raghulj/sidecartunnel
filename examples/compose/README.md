@@ -14,13 +14,28 @@ Full operational detail: [`docs/10-operations.md`](../../docs/10-operations.md) 
 | Replace `ST_APP__WEBHOOK_SECRETS` and `ST_CONTROL__SECRET` | Both are literal placeholders. Minimum 32 bytes each: `openssl rand -hex 32`. |
 | Replace the `webapp` image | It is `nginx:1.27-alpine` standing in for the application. Nothing runs until it serves `POST /_st/connect`. |
 | Set `ST_SERVER__ALLOWED_ORIGINS` to the real origin | Exact origins, no wildcards. Startup fails if it is empty. |
-| Pin the gateway image to a released tag | `:latest` moves. No release has been cut yet — until one is, build locally with `docker build -t sidecartunnel:dev .` from the repository root. |
+| Pin the gateway image to a released tag | `:latest` moves, and no release has been cut, so the default does not resolve at all — `docker compose up` fails with `manifest unknown`. Build locally and set `ST_IMAGE`. |
 
 ```sh
-docker compose up -d
+docker build -t sidecartunnel:dev ../..        # no release exists yet
+ST_IMAGE=sidecartunnel:dev docker compose up -d
 docker compose ps          # both replicas healthy
 docker compose logs -f sidecartunnel
 ```
+
+```
+NAME                                    STATUS
+sidecartunnel-example-redis-1           Up 17 seconds (healthy)
+sidecartunnel-example-sidecartunnel-1   Up 12 seconds (healthy)
+sidecartunnel-example-sidecartunnel-2   Up 12 seconds (healthy)
+sidecartunnel-example-webapp-1          Up 12 seconds
+```
+
+The `webapp` service is `nginx:1.27-alpine` standing in for the application. It listens on
+80 while `ST_APP__CONNECT_URL` names 5000, so every connect closes **3008, retryable**. The
+gateway starts, reports healthy and holds its bus subscription regardless, which is what
+this file is here to show. For a stack that carries a real connection end to end, use
+[`examples/flask`](../flask/).
 
 The gateway publishes no ports. The websocket must be same-origin with the application, so
 a front proxy routes `example.com/ws` to `sidecartunnel:8000` across this network. For a
@@ -73,9 +88,10 @@ anything that is not the gateway.
 
 | Check | Command |
 |---|---|
-| Gateway is alive | `docker compose exec sidecartunnel /sidecartunnel healthcheck` |
+| Gateway is alive | `docker compose exec sidecartunnel /sidecartunnel healthcheck` — exits `0` |
+| Gateway is ready | `docker run --rm --network sidecartunnel-example_default curlimages/curl -s http://sidecartunnel:8000/ready` — `{"ready":true,"bus_connected":true,"bus_down_for_seconds":0,"bus_reconnects":0,"draining":false}`. No port is published, so the probe is read from inside the network |
 | Redis buffer limit took effect | `docker compose exec redis redis-cli config get client-output-buffer-limit` |
-| Publishing reaches subscribers | `docker compose exec redis redis-cli -n 3 publish st:room-4410 '{"event":"ping","data":{}}'` |
+| Publishing reaches the bus | `docker compose exec redis redis-cli -n 3 publish st:room-4410 '{"event":"ping","data":{}}'` — the returned count is **gateway replicas holding that channel**, not end clients. `0` with no client subscribed is correct, and is the only thing the publisher ever learns |
 | Channel is actually subscribed | `docker compose logs sidecartunnel \| grep '"msg":"subscribe"' \| grep room-4410` |
 
 The publish key is `{bus.prefix}{channel}` exactly — `st:room-4410` for channel

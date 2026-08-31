@@ -188,7 +188,7 @@ replica cannot reach Redis", which are the same status code and very different i
 |---|---|
 | Is the fleet losing connections? | Rate of `connection closed` in the log, grouped by `code` |
 | Is a deploy about to take the application down? | Rate of `connected`, against §4's model |
-| Is the application refusing everyone? | `connect refused by the application` with `status` 401 |
+| Is the application refusing everyone? | `connect webhook refused the connection` with `status` 401. The `connect refused by the application` line beside it carries only `client` |
 | Is Redis evicting this replica? | `bus_reconnects` on `/ready`, sampled a minute apart |
 | Is this replica out of the load balancer? | The `/ready` status code |
 | Is anybody subscribed to the channel being published? | `grep '"msg":"subscribe"'` for the channel name |
@@ -200,11 +200,12 @@ JSON, one line per event, on stderr. Never a cookie, an `Authorization` header, 
 body, or a message payload (NFR-7).
 
 ```json
-{"time":"...","level":"INFO","msg":"connected","client":"8f2c1e04a7b3d915","user":"u-7","subs":3}
-{"time":"...","level":"INFO","msg":"subscription withdrawn","client":"8f2c1e04a7b3d915","channel":"room-4410","reason":"revoked"}
-{"time":"...","level":"INFO","msg":"connection closed","client":"8f2c1e04a7b3d915","code":3005,"reason":"slow consumer"}
-{"time":"...","level":"WARN","msg":"origin rejected","origin":"https://evil.example","remote":"203.0.113.9:52104"}
-{"time":"...","level":"WARN","msg":"control message rejected","reason":"stale","err":"..."}
+{"time":"...","level":"INFO","msg":"connected","client":"1042187c649c01bd","user":"u-7","subs":3}
+{"time":"...","level":"INFO","msg":"subscribe","client":"1042187c649c01bd","channel":"room-4410"}
+{"time":"...","level":"INFO","msg":"connection closed","client":"1042187c649c01bd","code":3501,"reason":"account suspended"}
+{"time":"...","level":"INFO","msg":"control applied","action":"disconnect","user":"u-7","client":""}
+{"time":"...","level":"WARN","msg":"origin rejected","origin":"https://evil.example","remote":"172.23.0.5:33218"}
+{"time":"...","level":"WARN","msg":"control message rejected","reason":"stale","err":"control message rejected: ts is 1m40s outside the ±5m0s window; check this replica's clock"}
 ```
 
 **`client` is the join key.** Every line a connection produces carries it, from the
@@ -222,15 +223,16 @@ The lines worth building a query on:
 | `connection closed` | info | `client`, `code`, `reason` | Group by `code`: `3005` slow consumer, `3004` ping timeout, `3000` drain, `3501` revocation, `3503` expiry |
 | `subscription withdrawn` | info | `client`, `channel`, `reason` | A grant stopped covering a channel the connection held |
 | `origin rejected` | warn | `origin`, `remote` | Probing, or a missing entry in `server.allowed_origins` |
-| `connect refused by the application` | info | `client`, `status` | The application said no. A 401 rate that jumps after a deploy is §7 |
+| `connect webhook refused the connection` | info | `app`, `client`, `duration_ms`, `cached`, `status`, `reconnect` | The application said no. A 401 rate that jumps after a deploy is §7. `connect refused by the application` follows it carrying only `client` |
 | `connect webhook unavailable` | error | `status`, `err` | The application could not answer. Closes 3008, retryable |
-| `connect webhook rejected the gateway's request` | error | `status` | A 403: wrong `app.webhook_secrets`, or a skewed clock. Rate-limited, so one line stands for many |
-| `bus.dispatch dropped a message` | debug | `channel`, `err` | A published envelope did not decode. The channel is there; the payload deliberately is not |
-| `control message rejected` | warn | `reason` | `unsigned`, `stale` or `malformed` — three different people to talk to (`04-integration.md` §3) |
+| `connect webhook rejected the gateway's request; check app.webhook_secrets and this replica's clock` | error | `status` | A 403: wrong `app.webhook_secrets`, or a skewed clock. Rate-limited, so one line stands for many |
+| `bus message dropped` | debug | `channel`, `reason`, `err` | A published envelope did not decode, or carried no `event` or no `data`. The channel is there; the payload deliberately is not |
+| `control message rejected` | warn | `reason`, `err` | `unsigned`, `stale` or `malformed` — three different people to talk to (`04-integration.md` §3). `control applied` (`action`, `user`, `client`) is the line for one that was accepted |
 | `sidecartunnel started` | info | `server.listen`, `server.path`, `bus.kind`, `namespaces` | The configuration that actually took effect, once per process |
 
-`bus.dispatch dropped a message` needs `log.level: debug`. Everything else above is at info
-or higher.
+`bus message dropped` needs `log.level: debug`, as do `connect webhook authorized` (`app`,
+`client`, `duration_ms`, `cached`, `user`, `expires_in_s`) and `read loop ended`. Everything
+else above is at info or higher.
 
 ## 7. Runbook
 

@@ -23,11 +23,25 @@ pytest -q
 
 ```sh
 cp .env.example .env        # placeholders only; replace them
-docker compose up
+docker compose up --build
 open http://localhost:8080
 ```
 
 Open the same URL in a **second tab**. A message sent in one appears in the other.
+
+Four containers come up. `docker compose ps` when it is working:
+
+```
+SERVICE         STATUS
+caddy           Up 8 seconds
+redis           Up 8 seconds
+sidecartunnel   Up 8 seconds (healthy)
+webapp          Up 8 seconds
+```
+
+The gateway image is built from the repository root `Dockerfile` by this compose file, so
+no release needs to exist. `docs/16-integration-guide.md` §13 drives the same stack from
+the command line with real frames.
 
 Or without Docker:
 
@@ -40,22 +54,23 @@ python3 app.py
 With no `REDIS_URL`, publishes go to a null publisher and are logged rather than sent.
 Every HTTP surface still works.
 
-### What Does Not Run Yet
+### Without The Gateway
 
-| Piece | State |
-|---|---|
-| Application side — webhook, publish, `?since=`, revocation | **Runs.** Tested. |
-| Browser client, `client/js/sidecartunnel.js` | **Present.** Imported by `templates/index.html`. |
-| Gateway | **Not implemented.** `cmd/sidecartunnel` panics; M1 and M2 in `docs/12-roadmap.md`. |
+Stop it and the page keeps working:
 
-Until the gateway exists, the page shows the connection retrying with full-jitter backoff,
-and messages still appear through the HTTP write and the `?since=` reconciliation. That is
-the correct behaviour for a gateway that is down, and worth seeing: connections retry, the
-application keeps working, and nothing is lost.
+```sh
+docker compose stop sidecartunnel
+```
+
+The connection retries with full-jitter backoff, and messages still appear through the HTTP
+write and the `?since=` reconciliation. That is the correct behaviour for a gateway that is
+down, and it is worth seeing: connections retry, the application keeps working, and nothing
+is lost.
 
 `templates/index.html` imports the library from `/client/js/sidecartunnel.js`, which
-`app.py` serves out of the checkout. A real application copies the file into its own static
-directory and serves it the way it serves any other asset.
+`app.py` serves out of the checkout. In the container that directory is a bind mount at
+`/client/js` and `ST_CLIENT_JS_DIR` points at it. A real application copies the file into
+its own static directory and serves it the way it serves any other asset.
 
 ## What To Look At
 
@@ -80,7 +95,7 @@ In this order.
 | Send from tab A | Appears in tab B highlighted; **not** re-added in tab A | `exclude` and `X-St-Client` |
 | `docker compose restart sidecartunnel` | Tabs reconnect and hold every message sent during the gap | `?since=` is doing the work, not the socket |
 | `docker compose stop redis` | Connections stay open and silent | The gateway holds sockets through a bus outage by design |
-| `curl -X POST localhost:8080/admin/users/7/suspend` | Every connection for `u-7` closes with **3501** and does not retry | Revocation over the control channel |
+| `curl -X POST localhost:8080/admin/users/7/suspend` | Every connection for `u-7` closes with **3501** and does not retry | Revocation over the control channel. Recover with `docker compose up -d --force-recreate webapp`, which resets the demo database. |
 | Visit `/login/9` | The webhook answers **401**, the page stops retrying | Suspended user, refusal not failure |
 | `docker compose logs sidecartunnel \| grep '"msg":"subscribe"' \| grep room-4410` | The clients subscribed to `room-4410` | The way to catch a typo'd channel name — subscribe/unsubscribe are logged at INFO with `client` and `channel` |
 

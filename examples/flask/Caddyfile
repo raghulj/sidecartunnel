@@ -1,6 +1,18 @@
 # Path routing, so the websocket is same-origin with the application and the browser
 # attaches the session cookie to the upgrade with no frontend authentication code.
 # docs/10-operations.md §2.
+#
+# Caddy needs nothing added for the upgrade: `reverse_proxy` passes Upgrade and
+# Connection through, forwards Origin unmodified, and its default idle timeout of 5m is
+# already above server.ping_interval (25s). Other proxies do not. On nginx the same
+# routing needs `proxy_http_version 1.1`, `proxy_set_header Upgrade $http_upgrade`,
+# `proxy_set_header Connection "upgrade"` and `proxy_read_timeout` above 25s — without
+# the last one, healthy sockets are reaped on the timeout and every client reconnects
+# on a fixed interval forever.
+#
+# Only /ws* reaches the gateway. GET /health and GET /ready share that listener, so a
+# rule forwarding / would publish them; routing the websocket path and nothing else
+# keeps them internal.
 :8080 {
 	handle /ws* {
 		reverse_proxy sidecartunnel:8000

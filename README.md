@@ -4,7 +4,7 @@ A Go websocket gateway for applications that cannot hold long-lived connections 
 
 The application publishes with one `redis.publish()` call and authorizes with one HTTP endpoint. It does not import a websocket library, run an event loop, or change how it is deployed.
 
-**Not implemented yet.** The specification is complete and lives in [`docs/`](docs/). Implementation is in progress.
+The gateway is implemented and runs. A worked end-to-end stack — application, gateway, Redis and a same-origin proxy — is in [`examples/flask/`](examples/flask/), and [`docs/16-integration-guide.md`](docs/16-integration-guide.md) §13 walks the whole flow with commands that work. The specification lives in [`docs/`](docs/).
 
 ## How It Works
 
