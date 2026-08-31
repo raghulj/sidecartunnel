@@ -21,6 +21,11 @@
 //     critical section as the hub map. Any path that touches one without the other leaves
 //     a connection resident in the map after close, so fan-out writes to a dead
 //     connection forever and the refcount never reaches zero.
+//   - The reply to a subscription change is queued in that same critical section. Attach,
+//     Subscribe and Unsubscribe take the caller's pre-encoded frame and hand it to the
+//     connection before releasing the lock, which is what makes the ordering rule in
+//     docs/03-client-protocol.md §5.1 free rather than something to re-check: no push for
+//     a channel before its subscribe reply, none after its unsubscribe reply (M15).
 //   - Lock order is hub, then conn. Never the reverse, and neither is ever held while
 //     sending on a channel.
 //   - Fan-out takes the read lock, sends non-blockingly, collects the connections whose

@@ -145,15 +145,10 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 		return false
 	}
 
-	set, err := newGrantSet(auth.Grants)
-	if err != nil {
-		// An answer the gateway cannot compile is an answer it cannot enforce, and
-		// enforcing is the only thing it does. Refusing is the safe direction.
-		c.log.Warn("grant list rejected", "client", c.id, "err", err)
-		c.Close(proto.CloseUnauthorized, "invalid grants")
-		return false
-	}
-	c.grants.Store(&set)
+	// The set arrives compiled. An answer the gateway cannot compile is an answer it
+	// cannot enforce, and refusing it is the Authorizer's job: it is a decision (3003,
+	// reconnect false), not a failure, and FR-6's whole distinction is made there.
+	c.SetGrants(auth.Grants)
 	user := auth.User
 	c.user.Store(&user)
 

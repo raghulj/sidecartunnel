@@ -66,11 +66,11 @@ func TestReconcile_WedgedSyncNeverStallsFanOut_C7(t *testing.T) {
 		defer close(done)
 		for i := 0; i < 2000; i++ {
 			channel := fmt.Sprintf("churn-%d", i)
-			if err := h.Subscribe(one, channel); err != nil {
+			if err := h.Subscribe(one, channel, nil); err != nil {
 				t.Errorf("Subscribe(%s): %v", channel, err)
 				return
 			}
-			if err := h.Unsubscribe(one, channel); err != nil {
+			if err := h.Unsubscribe(one, channel, nil); err != nil {
 				t.Errorf("Unsubscribe(%s): %v", channel, err)
 				return
 			}
@@ -201,7 +201,7 @@ func TestReconcile_SyncGetsAFreshSlice(t *testing.T) {
 
 	mustSubscribe(t, h, s, "room-1")
 	b.waitSync(t, "st:_control", "st:room-1")
-	if err := h.Unsubscribe(s, "room-1"); err != nil {
+	if err := h.Unsubscribe(s, "room-1", nil); err != nil {
 		t.Fatalf("Unsubscribe: %v", err)
 	}
 	b.waitSync(t, "st:_control")

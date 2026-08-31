@@ -28,7 +28,7 @@ func TestHub_NoGoroutineLeaks_NFR3(t *testing.T) {
 			if err := h.Add(s); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
-			if err := h.Subscribe(s, "room-1"); err != nil {
+			if err := h.Subscribe(s, "room-1", nil); err != nil {
 				t.Fatalf("Subscribe: %v", err)
 			}
 			if err := h.Dispatch(bus.Message{Channel: "st:room-1", Payload: []byte(`{"event":"e","data":1}`)}); err != nil {

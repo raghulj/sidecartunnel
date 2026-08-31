@@ -166,7 +166,7 @@ claims presence is on, while presence does nothing, is a lie an operator will ac
 |---|---|---|---|
 | `max_connections` | int | `25000` | 0 = unlimited. Sized for 20,000 concurrent across two replicas, either able to carry the fleet alone. |
 | `max_subscriptions_per_conn` | int | `500` | 1–10000. Exceeding it is error 108. |
-| `max_connections_per_user` | int | `20` | 0 = unlimited. One looping client must not consume the global cap. |
+| `max_connections_per_user` | int | `20` | 0 = unlimited. One looping client must not consume the global cap. Exceeding it closes 3003, `reconnect: false` (FR-25) — a retryable close would invite the loop the cap exists to stop. |
 | `read_buffer` | bytes | `2048` | Socket read buffer. Library defaults of 4 KiB each are the difference between fitting the memory budget and not. |
 | `write_buffer` | bytes | `2048` | Socket write buffer. |
 | `compression` | bool | `false` | `permessage-deflate`. Each context is ~256 KiB; at 20,000 connections that is 5 GiB against a 1 GiB budget. Leave off unless measured. |

@@ -655,12 +655,3 @@ func fnv1a(s string) uint64 {
 	}
 	return h
 }
-
-// newGrantSet compiles a grant list once, at connect (FR-9).
-func newGrantSet(grants []string) (glob.Set, error) {
-	set, err := glob.NewSet(grants)
-	if err != nil {
-		return glob.Set{}, fmt.Errorf("conn: compile grants: %w", err)
-	}
-	return set, nil
-}

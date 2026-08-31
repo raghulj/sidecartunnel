@@ -360,10 +360,26 @@ func mustAdd(t *testing.T, h *Hub, sinks ...*fakeSink) {
 func mustSubscribe(t *testing.T, h *Hub, s Sink, channels ...string) {
 	t.Helper()
 	for _, ch := range channels {
-		if err := h.Subscribe(s, ch); err != nil {
+		if err := h.Subscribe(s, ch, nil); err != nil {
 			t.Fatalf("Subscribe(%s): %v", ch, err)
 		}
 	}
+}
+
+// insertUnderLock and dropUnderLock take the write lock the hub's own callers hold
+// around insertLocked and dropLocked, so a test can assert the FR-10 refcount edges
+// directly. The locking moved out of those two when the ack had to be queued in the same
+// critical section as the mutation (M15).
+func insertUnderLock(h *Hub, s Sink, key string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.insertLocked(s, key)
+}
+
+func dropUnderLock(h *Hub, s Sink, key string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.dropLocked(s, key)
 }
 
 // desiredSnapshot reads the reconciler's target set under the hub lock.

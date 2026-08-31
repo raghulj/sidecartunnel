@@ -89,7 +89,7 @@ func TestMalformedFrames_101(t *testing.T) {
 // fails authorization is omitted from the reply map rather than failing the whole
 // connect, and the client compares what it asked for against what it got.
 func TestConnect_SubsAreFilteredNotFailed(t *testing.T) {
-	r := newRig(t, func(o *Options) { o.Authorizer = okAuth("u", "room-*", "desk-*") })
+	r := newRig(t, func(o *Options) { o.Authorizer = okAuth(t, "u", "room-*", "desk-*") })
 	r.reg.refuse["desk-9"] = true // an unknown namespace, refused by the registry
 
 	reply := r.connect("room-1", "room-1", "org-99-secret", "_control", "desk-9", "room-2")
@@ -395,7 +395,7 @@ func TestPing_EchoesID(t *testing.T) {
 // TestAllows_NoGrantsMatchesNothing — a connection whose webhook has not answered yet
 // matches nothing. Failing closed is the only safe direction (FR-5).
 func TestAllows_NoGrantsMatchesNothing(t *testing.T) {
-	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")})
+	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -418,12 +418,14 @@ func TestCommandError_Error(t *testing.T) {
 	}
 }
 
-// mustGrants compiles a grant list or fails the test.
+// mustGrants compiles a grant list or fails the test. Compiling is the Authorizer's job
+// in production — Authorization.Grants arrives as a glob.Set — so a test that wants a
+// connection with grants compiles them the same way internal/webhook does.
 func mustGrants(t *testing.T, patterns ...string) glob.Set {
 	t.Helper()
-	set, err := newGrantSet(patterns)
+	set, err := glob.NewSet(patterns)
 	if err != nil {
-		t.Fatalf("newGrantSet(%v): %v", patterns, err)
+		t.Fatalf("glob.NewSet(%v): %v", patterns, err)
 	}
 	return set
 }

@@ -7,15 +7,32 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raghulj/sidecartunnel/internal/glob"
 	"github.com/raghulj/sidecartunnel/internal/proto"
 )
 
 // Sink is the connection surface a registry sees: address it, hand it a frame, end it.
 //
-// It is structurally identical to hub.Sink and is declared here so that internal/conn and
-// internal/hub build, and can be tested, apart — the dependency direction in
-// docs/09-internals.md §1 is downward only, and neither package needs to import the
-// other for *Conn to satisfy both.
+// It is structurally identical to hub.Sink and stays declared here rather than being
+// replaced by it. That was reconsidered when hub.Subscribe and hub.Unsubscribe grew the
+// ack parameter this package's Registry always required, and the local declaration won on
+// three counts:
+//
+//   - Importing internal/hub would couple the two packages docs/09-internals.md §1
+//     requires be built and tested apart, and would drag internal/bus and internal/config
+//     into this package's import graph for the sake of four method signatures it already
+//     states.
+//   - It would buy nothing, because *hub.Hub cannot satisfy Registry whatever this type
+//     is called: Publish takes a Sink, a channel, an event and a payload here and a
+//     context, a channel and bytes there, and the hub's refusals are sentinel errors that
+//     something has to map onto the *CommandError codes docs/03-client-protocol.md §6
+//     assigns. An adapter exists either way, and internal/server is where it belongs —
+//     the package that already knows the configuration both sides were built from.
+//   - Nothing is lost at the seam. Go converts between two interfaces with the same
+//     method set implicitly, so a Sink flows into a parameter typed hub.Sink with no
+//     assertion, and the interface value still holds the same (type, pointer) pair — which
+//     matters, because the hub keys its maps by it and a copy that compared unequal would
+//     leave a connection resident in the map forever.
 //
 // Every method is safe to call concurrently and none of them blocks.
 type Sink interface {
@@ -108,9 +125,20 @@ type Authorization struct {
 	// (FR-18) and stamps client events.
 	User string
 
-	// Grants are the channel patterns this connection may hold, compiled once at connect
-	// and never at match time (FR-9).
-	Grants []string
+	// Grants are the channel patterns this connection may hold, already compiled.
+	//
+	// It is a compiled glob.Set rather than the raw strings because the Authorizer is
+	// what turns the application's answer into one, and it has to compile the list anyway
+	// to tell an unusable answer from a usable one: a grant beginning "_" is a refusal
+	// (proto.CloseUnauthorized, reconnect false) decided where the rest of FR-6's
+	// refusal-versus-failure distinction is decided, and internal/webhook already answers
+	// it that way. Compiling a second time here would be the same work done twice, with a
+	// second error path that a correct Authorizer can never reach.
+	//
+	// A Set is immutable, so it is safe to hand to a connection whose reader is already
+	// matching against the previous one (FR-9, docs/13-review-findings.md M2). The zero
+	// Set is a connection with no grants, which is legal and can subscribe to nothing.
+	Grants glob.Set
 
 	// ExpiresIn is how long the grant set is good for. At that point the connection is
 	// closed with proto.CloseExpired so the client re-handshakes with whatever cookie the

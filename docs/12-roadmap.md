@@ -150,6 +150,12 @@ Written down now so they are recognisable later.
 - **The single hub lock.** Right for 20,000 connections by the arithmetic in
   `09-internals.md` §3. NFR-9 gates sharding behind a profile precisely because I expect to
   be tempted to build it before the profile says so.
+- **`webhook.Request.ChannelsRequested` is always empty.** The connect frame's `subs` list
+  cannot reach the connect webhook, because the authorizer is called before the frame is
+  parsed. An application that wanted to scope grants to what was actually asked for
+  cannot. Fixing it means the authorization call takes the requested channels, which
+  changes a signature in `internal/conn`. Nothing needs it yet, and the field is documented
+  as informational.
 - **Namespace-as-prefix.** Splitting on the first separator is simple and might be too
   simple for a naming scheme I have not thought of yet.
 - **`max_subscriptions_per_conn` and §3.1 are the same problem.** A user in ten thousand

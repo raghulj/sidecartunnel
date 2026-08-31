@@ -61,19 +61,19 @@ func TestRefcount_TransitionsDecidedUnderTheLock_FR10(t *testing.T) {
 	s1, s2 := newSink("c1", "u1"), newSink("c2", "u2")
 	mustAdd(t, h, s1, s2)
 
-	first, err := h.insert(s1, "st:room-1")
+	first, err := insertUnderLock(h, s1, "st:room-1")
 	if err != nil || !first {
 		t.Fatalf("insert(s1) = (%v, %v), want (true, nil): 0→1 must be the first edge", first, err)
 	}
-	first, err = h.insert(s2, "st:room-1")
+	first, err = insertUnderLock(h, s2, "st:room-1")
 	if err != nil || first {
 		t.Fatalf("insert(s2) = (%v, %v), want (false, nil): a second holder is not a new subscription", first, err)
 	}
-	last, err := h.drop(s1, "st:room-1")
+	last, err := dropUnderLock(h, s1, "st:room-1")
 	if err != nil || last {
 		t.Fatalf("drop(s1) = (%v, %v), want (false, nil): one holder remains", last, err)
 	}
-	last, err = h.drop(s2, "st:room-1")
+	last, err = dropUnderLock(h, s2, "st:room-1")
 	if err != nil || !last {
 		t.Fatalf("drop(s2) = (%v, %v), want (true, nil): 1→0 must be the last edge", last, err)
 	}
@@ -92,13 +92,13 @@ func TestSubscribe_TwoHoldersOneUpstreamEntry_FR10(t *testing.T) {
 
 	b.waitSync(t, "st:_control", "st:room-1")
 
-	if err := h.Unsubscribe(s1, "room-1"); err != nil {
+	if err := h.Unsubscribe(s1, "room-1", nil); err != nil {
 		t.Fatalf("Unsubscribe(s1): %v", err)
 	}
 	if got := desiredSnapshot(h); !reflect.DeepEqual(got, []string{"st:_control", "st:room-1"}) {
 		t.Fatalf("desired = %v: one holder remains, the subscription must stay", got)
 	}
-	if err := h.Unsubscribe(s2, "room-1"); err != nil {
+	if err := h.Unsubscribe(s2, "room-1", nil); err != nil {
 		t.Fatalf("Unsubscribe(s2): %v", err)
 	}
 	if got := desiredSnapshot(h); !reflect.DeepEqual(got, []string{"st:_control"}) {
@@ -156,7 +156,7 @@ func TestSubscribe_Errors(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, h, s)
 			}
-			if err := h.Subscribe(s, tt.channel); !errors.Is(err, tt.want) {
+			if err := h.Subscribe(s, tt.channel, nil); !errors.Is(err, tt.want) {
 				t.Fatalf("Subscribe(%q) = %v, want %v", tt.channel, err, tt.want)
 			}
 		})
@@ -174,10 +174,10 @@ func TestSubscribe_UnregisteredSinkCannotResurrect(t *testing.T) {
 	mustSubscribe(t, h, s, "room-1")
 	h.Remove(s)
 
-	if err := h.Subscribe(s, "room-2"); !errors.Is(err, ErrNotRegistered) {
+	if err := h.Subscribe(s, "room-2", nil); !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Subscribe after Remove = %v, want ErrNotRegistered", err)
 	}
-	if err := h.Unsubscribe(s, "room-1"); !errors.Is(err, ErrNotRegistered) {
+	if err := h.Unsubscribe(s, "room-1", nil); !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Unsubscribe after Remove = %v, want ErrNotRegistered", err)
 	}
 	if got := h.Subscriptions(s); len(got) != 0 {
@@ -193,7 +193,7 @@ func TestUnsubscribe_NotSubscribed(t *testing.T) {
 	h := newTestHub(t, newBus())
 	s := newSink("c1", "u1")
 	mustAdd(t, h, s)
-	if err := h.Unsubscribe(s, "room-1"); !errors.Is(err, ErrNotSubscribed) {
+	if err := h.Unsubscribe(s, "room-1", nil); !errors.Is(err, ErrNotSubscribed) {
 		t.Fatalf("Unsubscribe = %v, want ErrNotSubscribed", err)
 	}
 }
@@ -364,11 +364,11 @@ func TestConcurrentSubscribeUnsubscribe_SameChannel_FR10(t *testing.T) {
 		go func(s *fakeSink) {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
-				if err := h.Subscribe(s, "room-1"); err != nil {
+				if err := h.Subscribe(s, "room-1", nil); err != nil {
 					t.Errorf("Subscribe: %v", err)
 					return
 				}
-				if err := h.Unsubscribe(s, "room-1"); err != nil {
+				if err := h.Unsubscribe(s, "room-1", nil); err != nil {
 					t.Errorf("Unsubscribe: %v", err)
 					return
 				}

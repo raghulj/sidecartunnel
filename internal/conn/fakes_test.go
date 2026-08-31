@@ -444,9 +444,11 @@ func (r *fakeRegistry) fanout(f *proto.Frame) {
 // fake authorizer
 // ---------------------------------------------------------------------------
 
-func okAuth(user string, grants ...string) Authorizer {
+func okAuth(t *testing.T, user string, grants ...string) Authorizer {
+	t.Helper()
+	set := mustGrants(t, grants...)
 	return AuthorizerFunc(func(context.Context) (Authorization, error) {
-		return Authorization{User: user, Grants: grants, ExpiresIn: time.Hour}, nil
+		return Authorization{User: user, Grants: set, ExpiresIn: time.Hour}, nil
 	})
 }
 
@@ -500,7 +502,7 @@ func newRig(t *testing.T, tweak ...func(*Options)) *rig {
 	opts := Options{
 		Socket:     sock,
 		Registry:   reg,
-		Authorizer: okAuth("u-1", "room-*"),
+		Authorizer: okAuth(t, "u-1", "room-*"),
 		Clock:      clk,
 		Log:        slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}

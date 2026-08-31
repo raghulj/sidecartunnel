@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/raghulj/sidecartunnel/internal/glob"
 	"github.com/raghulj/sidecartunnel/internal/proto"
 )
 
@@ -27,7 +28,7 @@ func TestConn_ImplementsSink(t *testing.T) {
 
 func TestNew_RejectsMissingSeams(t *testing.T) {
 	full := func() Options {
-		return Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")}
+		return Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")}
 	}
 	tests := []struct {
 		name string
@@ -49,14 +50,14 @@ func TestNew_RejectsMissingSeams(t *testing.T) {
 }
 
 func TestNew_GeneratesSixteenHexID(t *testing.T) {
-	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")})
+	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(c.ID()) {
 		t.Fatalf("ID = %q, want 16 hex characters", c.ID())
 	}
-	other, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")})
+	other, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestNew_GeneratesSixteenHexID(t *testing.T) {
 }
 
 func TestNew_KeepsSuppliedID(t *testing.T) {
-	c, err := New(Options{ID: "cafebabecafebabe", Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")})
+	c, err := New(Options{ID: "cafebabecafebabe", Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestNew_KeepsSuppliedID(t *testing.T) {
 // TestConn_UserFixedForLife covers Sink's contract: empty until the webhook answers,
 // then fixed, and readable after close (FR-18 targets revocation by it).
 func TestConn_UserFixedForLife(t *testing.T) {
-	r := newRig(t, func(o *Options) { o.Authorizer = okAuth("user-42", "room-*") })
+	r := newRig(t, func(o *Options) { o.Authorizer = okAuth(t, "user-42", "room-*") })
 	if got := r.conn.User(); got != "" {
 		t.Fatalf("User before connect = %q, want empty", got)
 	}
@@ -121,7 +122,7 @@ func TestHandshakeTimeout_StopsAtTheFrame_FR4(t *testing.T) {
 		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
 			close(entered)
 			<-release
-			return Authorization{User: "u", Grants: []string{"room-*"}, ExpiresIn: time.Hour}, nil
+			return Authorization{User: "u", Grants: mustGrants(t, "room-*"), ExpiresIn: time.Hour}, nil
 		})
 	})
 
@@ -176,17 +177,6 @@ func TestAuthorizationFailure_FR6(t *testing.T) {
 				t.Fatalf("websocket close code = %d, want %d", code, tt.wantCode)
 			}
 		})
-	}
-}
-
-// TestUncompilableGrants_Closes3003 — a grant list the gateway cannot compile is an
-// application answer it cannot enforce, and FR-6 makes that a decision, not a failure.
-func TestUncompilableGrants_Closes3003(t *testing.T) {
-	r := newRig(t, func(o *Options) { o.Authorizer = okAuth("u", "_control") })
-	r.sock.feed(map[string]any{"id": 1, "connect": map[string]any{}})
-	got := r.wantDisconnect(proto.CloseUnauthorized)
-	if got.Reconnect {
-		t.Fatal("a grant list that cannot compile is not retryable")
 	}
 }
 
@@ -387,7 +377,7 @@ func TestGrants_SwapWhileMatching_M2(t *testing.T) {
 	// desk-* is in the connect answer and in every set the swapper installs, so a
 	// subscribe to desk-1 must succeed on every single iteration. Anything else is a torn
 	// read, which is the defect M2 names.
-	r := newRig(t, func(o *Options) { o.Authorizer = okAuth("u-1", "room-*", "desk-*") })
+	r := newRig(t, func(o *Options) { o.Authorizer = okAuth(t, "u-1", "room-*", "desk-*") })
 	r.connect()
 
 	stop := make(chan struct{})
@@ -401,7 +391,7 @@ func TestGrants_SwapWhileMatching_M2(t *testing.T) {
 				return
 			default:
 			}
-			set, err := newGrantSet([]string{fmt.Sprintf("room-%d-*", i), "desk-*"})
+			set, err := glob.NewSet([]string{fmt.Sprintf("room-%d-*", i), "desk-*"})
 			if err != nil {
 				return
 			}
@@ -456,7 +446,7 @@ func TestNoGoroutineLeaks_NFR3(t *testing.T) {
 		c, err := New(Options{
 			Socket:     sock,
 			Registry:   newFakeRegistry(),
-			Authorizer: okAuth("u", "room-*"),
+			Authorizer: okAuth(t, "u", "room-*"),
 			Clock:      newFakeClock(),
 			Log:        slog.New(slog.DiscardHandler),
 		})
@@ -491,7 +481,7 @@ func TestNoGoroutineLeaks_NFR3(t *testing.T) {
 func TestExpiry_Closes3503_FR22(t *testing.T) {
 	r := newRig(t, func(o *Options) {
 		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
-			return Authorization{User: "u", Grants: []string{"room-*"}, ExpiresIn: time.Hour}, nil
+			return Authorization{User: "u", Grants: mustGrants(t, "room-*"), ExpiresIn: time.Hour}, nil
 		})
 	})
 	reply := r.connect()
@@ -648,7 +638,7 @@ func TestClose_ReasonTruncated(t *testing.T) {
 // TestOffer_RefusesNilFrame — encode returns nil when a frame cannot be serialized, and
 // nothing downstream may dereference it.
 func TestOffer_RefusesNilFrame(t *testing.T) {
-	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth("u")})
+	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -665,7 +655,7 @@ func TestOffer_RefusesNilFrame(t *testing.T) {
 func TestConnect_NoExpiryArmsNoTimer(t *testing.T) {
 	r := newRig(t, func(o *Options) {
 		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
-			return Authorization{User: "u", Grants: []string{"room-*"}}, nil
+			return Authorization{User: "u", Grants: mustGrants(t, "room-*")}, nil
 		})
 	})
 	if got := r.connect().ExpiresIn; got != 0 {
@@ -700,7 +690,7 @@ func TestUnsubscribed_Push_FR17(t *testing.T) {
 func TestRetryAfter_PerCloseCode(t *testing.T) {
 	c, err := New(Options{
 		ID: "0123456789abcdef", Socket: newFakeSocket(), Registry: newFakeRegistry(),
-		Authorizer: okAuth("u"), RetrySpread: 60 * time.Second,
+		Authorizer: okAuth(t, "u"), RetrySpread: 60 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -752,7 +742,7 @@ func TestRetryAfter_SpreadDiffersPerConnection(t *testing.T) {
 	newFor := func(id string) *Conn {
 		c, err := New(Options{
 			ID: id, Socket: newFakeSocket(), Registry: newFakeRegistry(),
-			Authorizer: okAuth("u"), RetrySpread: time.Minute,
+			Authorizer: okAuth(t, "u"), RetrySpread: time.Minute,
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -786,7 +776,7 @@ func TestNFR7_LogsCarryNoSecrets(t *testing.T) {
 	const payload = "s3cr3t-payload-value"
 	const cookieish = "sessionid=abc123def456"
 
-	r := newRig(t, func(o *Options) { o.Authorizer = okAuth("u", "room-*") })
+	r := newRig(t, func(o *Options) { o.Authorizer = okAuth(t, "u", "room-*") })
 	r.connect("room-1")
 	r.sock.feed(map[string]any{"id": 2, "publish": map[string]any{
 		"channel": "room-1", "event": "typing", "data": map[string]any{"note": payload},

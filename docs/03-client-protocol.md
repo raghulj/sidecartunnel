@@ -136,7 +136,12 @@ fabricated events into a channel it cannot even read.
 
 `event` is required and client-supplied. The gateway MUST stamp `from` with the
 connection's user id, MUST NOT allow the client to set it, and MUST exclude the publisher
-from its own event unless the namespace sets `echo: true`.
+from its own event.
+
+An earlier draft made that exclusion conditional on a namespace key `echo: true`. No such
+key exists in `08-config.md` §3 or in `config.Namespace`, so the sentence described
+behaviour nothing could enable. Exclusion is unconditional: a client that wants to see its
+own typing indicator already knows it typed.
 
 Client events are ephemeral. They are not persisted, not replayed, and not seen by the
 application. Anything the application needs to know about goes over HTTP instead.

@@ -23,7 +23,8 @@ set -eu
 PROFILE="${1:-coverage.out}"
 PKGDIRS="$(mktemp -t stcover)"
 TESTLOG="$(mktemp -t sttest)"
-trap 'rm -f "${PKGDIRS}" "${TESTLOG}"' EXIT
+MERGED="$(mktemp -t stmerged)"
+trap 'rm -f "${PKGDIRS}" "${TESTLOG}" "${MERGED}"' EXIT
 
 go list -f '{{.ImportPath}} {{.Dir}}' ./... > "${PKGDIRS}"
 
@@ -40,6 +41,19 @@ if ! go test -race -covermode=atomic -coverpkg=./... -coverprofile="${PROFILE}" 
 		|| cat "${TESTLOG}" >&2
 	exit 1
 fi
+
+# Merge the profile before reading it. With -coverpkg=./... every test binary reports
+# every block in the module, so each block appears once per binary: covered in the run
+# that exercised it, and zero in the ten that did not. `go tool cover` sums the counts for
+# identical blocks; this did not, so it counted each package's statements eleven times
+# over and reported every package at about a ninth of its real coverage — 14.3% for a
+# package whose own tests cover all of it. Summing here is the same merge, done once,
+# before the gate sees a single line.
+{
+	head -n 1 "${PROFILE}"
+	awk 'NR > 1 { count[$1 " " $2] += $3 } END { for (block in count) print block, count[block] }' \
+		"${PROFILE}" | sort
+} > "${MERGED}"
 
 awk -v module="$(go list -m)" '
 	# First file: import path -> source directory.
@@ -125,4 +139,4 @@ awk -v module="$(go list -m)" '
 		}
 		printf "\nOK: every package at 100%% (exemptions justified in source).\n"
 	}
-' "${PKGDIRS}" "${PROFILE}"
+' "${PKGDIRS}" "${MERGED}"

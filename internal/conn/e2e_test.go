@@ -30,7 +30,7 @@ func serve(t *testing.T, tweak func(*Options)) (*websocket.Conn, *fakeRegistry) 
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		opts := Options{Socket: sock, Registry: reg, Authorizer: okAuth("u-1", "room-*")}
+		opts := Options{Socket: sock, Registry: reg, Authorizer: okAuth(t, "u-1", "room-*")}
 		if tweak != nil {
 			tweak(&opts)
 		}
@@ -189,7 +189,7 @@ func TestEndToEnd_ContextCancelDrains(t *testing.T) {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		c, err := New(Options{Socket: sock, Registry: reg, Authorizer: okAuth("u-1", "room-*")})
+		c, err := New(Options{Socket: sock, Registry: reg, Authorizer: okAuth(t, "u-1", "room-*")})
 		if err != nil {
 			t.Errorf("New: %v", err)
 			return

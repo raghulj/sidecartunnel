@@ -12,6 +12,7 @@ import (
 
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
+	"github.com/raghulj/sidecartunnel/internal/proto"
 )
 
 // Sentinel errors returned by the registry. They exist as sentinels so internal/conn can
@@ -326,7 +327,12 @@ func (h *Hub) Namespace(channel string) (config.Namespace, bool) {
 func (h *Hub) Add(s Sink) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.registerLocked(s)
+}
 
+// registerLocked is Add's body. The caller holds the write lock, so that Attach can
+// register and subscribe in one critical section (M15).
+func (h *Hub) registerLocked(s Sink) error {
 	if existing, ok := h.clients[s.ID()]; ok {
 		if existing == s {
 			return nil
@@ -342,6 +348,65 @@ func (h *Hub) Add(s Sink) error {
 	}
 	set[s] = struct{}{}
 	return nil
+}
+
+// Attach registers a connection and takes its connect-frame subscriptions in one critical
+// section, then queues the reply the ack callback builds — still under the same lock.
+//
+// It is the connect path of docs/03-client-protocol.md §4.1 and the widest case of M15's
+// ordering rule: a connect frame may name hundreds of channels, every one of them live
+// from the instant it is inserted. One call rather than a loop of Subscribe is therefore
+// not an optimization. It is one lock acquisition, and it leaves no window in which a
+// push for a just-granted channel could overtake the connect reply that announces it.
+//
+// ack is called with the channels actually taken, in the order they were requested, and
+// its frame is queued before the lock is released. A channel is silently omitted when it
+// is reserved, when its namespace does not resolve, when the connection already holds it,
+// or when it would exceed the subscription cap: §4.1 requires an omitted channel to be
+// left out of the reply rather than to fail the whole connect. ack is called even when
+// nothing was taken — an empty subs map is the important case there — and may return nil,
+// which queues nothing.
+//
+// ack runs under the write lock and MUST NOT call back into the hub, which would
+// deadlock. Encoding a frame is what it is for, and that is what internal/conn does.
+//
+// A client id already held by a different connection registers nothing and grants
+// nothing: overwriting the index entry would leave a live connection unreachable by a
+// control disconnect (FR-18), and ids are 16 hex characters from crypto/rand, so this
+// cannot happen by accident. Callers that need to see that refusal call Add first, which
+// also makes the connection targetable by control before its connect frame arrives.
+//
+// It never blocks and never waits for the bus.
+func (h *Hub) Attach(s Sink, channels []string, ack func(granted []string) *proto.Frame) {
+	granted := make([]string, 0, len(channels))
+	changed := false
+
+	h.mu.Lock()
+	// The error is deliberately not propagated: Attach answers a connect frame, and there
+	// is no close code for "the gateway assigned a duplicate client id" — the connection
+	// is simply granted nothing and holds nothing.
+	if err := h.registerLocked(s); err == nil {
+		for _, channel := range channels {
+			if h.admit(channel) != nil {
+				continue
+			}
+			first, err := h.insertLocked(s, h.key(channel))
+			if err != nil {
+				continue
+			}
+			granted = append(granted, channel)
+			changed = changed || first
+		}
+	}
+	refused := queueAck(s, ack(granted))
+	h.mu.Unlock()
+
+	if changed {
+		h.markDirty()
+	}
+	if refused {
+		h.enqueueClose(s)
+	}
 }
 
 // Remove deregisters a connection and drops every subscription it held.
@@ -381,46 +446,110 @@ func (h *Hub) Remove(s Sink) {
 	}
 }
 
-// Subscribe adds one channel to a connection.
+// Subscribe adds one channel to a connection and queues ack, the caller's pre-encoded
+// reply, in the same critical section as the insert.
+//
+// The ack parameter is how the normative rule in docs/03-client-protocol.md §5.1 is
+// satisfied: no push for a channel may reach the client before that channel's subscribe
+// reply. Queueing the reply under the lock that inserted the subscription makes that free,
+// because a fan-out cannot take the read lock until the insert and the reply have both
+// happened, and one writer goroutine per socket turns queue order into wire order (M15).
+// Queue it after releasing the lock and a dispatch worker slips into the gap, finds the
+// connection already in the channel's set, and puts a push in front of the reply that
+// announces the channel. The window is small, silent, and makes two conforming clients
+// disagree — one drops the message, the other closes.
+//
+// ack may be nil, which queues nothing. A connection that refuses it has a full outbound
+// queue and is handed to the closer goroutine after the lock is released (FR-15).
 //
 // It refuses a reserved channel, an unresolvable namespace, a duplicate, a connection
-// past its subscription cap, and a connection that is not registered. It does no
-// authorization: grants are the connection's, and a subscription that exists is delivered
-// to without being re-checked (docs/05-authorization.md §4).
+// past its subscription cap, and a connection that is not registered; nothing is queued
+// on any of those paths, because the caller answers them with an error reply instead. It
+// does no authorization: grants are the connection's, and a subscription that exists is
+// delivered to without being re-checked (docs/05-authorization.md §4).
 //
 // It never blocks and never waits for the bus. A 0→1 refcount transition adds the bus key
 // to the desired set inside the same critical section as the map mutation and then marks
 // the reconciler dirty with a non-blocking store (FR-10, C7).
-func (h *Hub) Subscribe(s Sink, channel string) error {
-	if strings.HasPrefix(channel, reservedPrefix) {
-		return fmt.Errorf("hub: subscribe %q: %w", channel, ErrReservedChannel)
+func (h *Hub) Subscribe(s Sink, channel string, ack *proto.Frame) error {
+	if err := h.admit(channel); err != nil {
+		return fmt.Errorf("hub: subscribe %q: %w", channel, err)
 	}
-	if _, ok := h.Namespace(channel); !ok {
-		return fmt.Errorf("hub: subscribe %q: %w", channel, ErrUnknownNamespace)
-	}
-	first, err := h.insert(s, h.key(channel))
+
+	h.mu.Lock()
+	first, err := h.insertLocked(s, h.key(channel))
+	refused := err == nil && queueAck(s, ack)
+	h.mu.Unlock()
+
 	if err != nil {
 		return fmt.Errorf("hub: subscribe %q: %w", channel, err)
 	}
 	if first {
 		h.markDirty()
 	}
+	if refused {
+		h.enqueueClose(s)
+	}
 	return nil
 }
 
-// Unsubscribe drops one channel from a connection.
+// Unsubscribe drops one channel from a connection and queues ack in the same critical
+// section as the drop.
+//
+// It is the other half of M15: no push for a channel may reach the client after that
+// channel's unsubscribe reply. Dropping the subscription and queueing the reply together
+// guarantees it, because a fan-out either ran entirely before the write lock was granted —
+// and therefore queued its push before the reply — or entirely after, when the connection
+// is no longer in the channel's set.
+//
+// ack may be nil. A connection that refuses it is handed to the closer goroutine after
+// the lock is released.
 //
 // It never blocks. A 1→0 refcount transition removes the bus key from the desired set
 // under the lock and marks the reconciler dirty afterwards (FR-10).
-func (h *Hub) Unsubscribe(s Sink, channel string) error {
-	last, err := h.drop(s, h.key(channel))
+func (h *Hub) Unsubscribe(s Sink, channel string, ack *proto.Frame) error {
+	h.mu.Lock()
+	last, err := h.dropLocked(s, h.key(channel))
+	refused := err == nil && queueAck(s, ack)
+	h.mu.Unlock()
+
 	if err != nil {
 		return fmt.Errorf("hub: unsubscribe %q: %w", channel, err)
 	}
 	if last {
 		h.markDirty()
 	}
+	if refused {
+		h.enqueueClose(s)
+	}
 	return nil
+}
+
+// admit reports why a channel may not be subscribed to at all, or nil.
+//
+// It consults no mutable state — the namespace table is written once, by New — so it runs
+// outside the lock and keeps the critical section to the map mutation.
+func (h *Hub) admit(channel string) error {
+	if strings.HasPrefix(channel, reservedPrefix) {
+		return ErrReservedChannel
+	}
+	if _, ok := h.Namespace(channel); !ok {
+		return ErrUnknownNamespace
+	}
+	return nil
+}
+
+// queueAck hands one pre-encoded reply to a connection while the caller still holds the
+// write lock, and reports whether the connection refused it.
+//
+// A nil ack is nothing to queue and is not a refusal: the caller had no reply to send, or
+// failed to encode one, and neither is a reason to close a connection whose outbound
+// queue is perfectly healthy.
+func queueAck(s Sink, ack *proto.Frame) bool {
+	if ack == nil {
+		return false
+	}
+	return !s.Send(ack)
 }
 
 // Subscriptions returns the connection's authoritative subscription set as bare channel
@@ -451,16 +580,14 @@ func (h *Hub) Publish(ctx context.Context, channel string, payload []byte) error
 	return nil
 }
 
-// insert adds one connection to one bus key and reports whether the channel went 0→1.
+// insertLocked adds one connection to one bus key and reports whether the channel went
+// 0→1. The caller holds the write lock.
 //
 // FR-10: the transition is decided here, under the lock, as len(set) == 1 immediately
 // after the insert. Recomputing it after the lock is released lets a concurrent
 // unsubscribe interleave, which either subscribes upstream twice or drops a subscription
 // that still has a holder.
-func (h *Hub) insert(s Sink, key string) (bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
+func (h *Hub) insertLocked(s Sink, key string) (bool, error) {
 	mirror, ok := h.subs[s]
 	if !ok {
 		return false, ErrNotRegistered
@@ -487,11 +614,9 @@ func (h *Hub) insert(s Sink, key string) (bool, error) {
 	return first, nil
 }
 
-// drop removes one connection from one bus key and reports whether the channel went 1→0.
-func (h *Hub) drop(s Sink, key string) (bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
+// dropLocked removes one connection from one bus key and reports whether the channel went
+// 1→0. The caller holds the write lock.
+func (h *Hub) dropLocked(s Sink, key string) (bool, error) {
 	mirror, ok := h.subs[s]
 	if !ok {
 		return false, ErrNotRegistered

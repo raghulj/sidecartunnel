@@ -125,6 +125,12 @@ close open sockets with code 3000 and `reconnect: true`, and exit within
 `server.drain_timeout` (default 20s).
 *Accept:* clients reconnect after a rolling restart with no manual intervention.
 
+**FR-25 — Per-user connection cap.** A connection exceeding
+`limits.max_connections_per_user` MUST be refused with 3003, `reconnect: false`, after the
+application has named the user.
+*Accept:* the N+1th connection for one user is refused and does not retry. A retryable
+close would invite exactly the reconnect loop the cap exists to stop.
+
 **FR-24 — Forwarded address.** `X-St-Forwarded-For` MUST be the socket peer address unless
 the peer is inside `server.trusted_proxies`. For a trusted peer, walk `X-Forwarded-For`
 **from the rightmost entry leftwards while each hop is trusted, and take the first
