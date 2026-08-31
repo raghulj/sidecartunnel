@@ -74,10 +74,30 @@ nonces for 300s; nothing here requires it.
 
 | Status | Gateway behaviour | Close code | `reconnect` |
 |---|---|---|---|
-| 401, 403 | Refuse the connection | 3003 | **false** |
+| **401** — the application refused this *user* | Refuse the connection | 3003 | **false** |
+| **403** — the application rejected the *request* | Refuse the connection | **3008** | **true** |
 | queue overflow or `connect_timeout` | Refuse the connection | **3008** | **true** |
 | 5xx, timeout, connection error | Refuse the connection | **3008** | **true** |
+| 404, 400, 3xx, 429, any unlisted status | Refuse the connection | **3008** | **true** |
 | 2xx with an unparseable body | Refuse, log once | 3003 | false |
+
+**401 and 403 mean different things and must not be merged.** 401 is a statement about the
+user: they may not connect, and the client must stop asking. 403 is a statement about the
+*request* — a bad signature, a timestamp outside the ±300s window, an unknown key during a
+rotation. That is a gateway-side fault, and a gateway fault must never be expressed to
+users as a permanent refusal.
+
+The case that forces this: a replica whose clock drifts past 300s gets a 403 on every
+call. Merged into 401 it locks out every user it serves with `reconnect: false`, and they
+stay locked out until a human notices. As 3008 they retry, the fleet degrades to the
+healthy replicas, and the operator gets an alarm instead of an outage. Because retrying
+cannot fix a bad secret or a skewed clock, a 403 is logged at ERROR and counted separately
+from 5xx, so "my app is down" and "my gateway cannot authenticate to my app" are
+distinguishable at a glance.
+
+Unlisted statuses are transient for the same reason. A 404 means `connect_url` is wrong;
+the choice is between every user locked out until someone notices and every user retrying
+until someone notices, and only the second is recoverable.
 
 The 401-vs-5xx distinction is the important one and it is easy to get wrong. A 401 means
 *this user may not connect* and the client must stop asking. A 500 means *I could not tell

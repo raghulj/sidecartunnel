@@ -173,6 +173,7 @@ What this design defends against, and what it does not.
 | Compromised gateway process | **Partly mitigated.** Cookies are no longer retained past the connect call (FR-22), so a memory dump no longer yields a set of live sessions. Still a tier-1 service. |
 | Anything with Redis access publishing to any channel | **Not defended.** Redis is a trust boundary; see below. |
 | A client flooding client events | Per-connection rate limit, then close 3007 |
+| Spoofing a client IP by prepending to `X-Forwarded-For` | Rightmost-untrusted-hop walk, and the header discarded entirely from an untrusted peer (FR-24) |
 | A client flooding connections | `limits.max_connections`, plus limits at the proxy |
 
 Two accepted risks, stated plainly rather than buried:

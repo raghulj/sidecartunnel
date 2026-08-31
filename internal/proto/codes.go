@@ -133,9 +133,12 @@ const (
 	// answer: a webhook 5xx, a webhook timeout, app.connect_timeout expiring, or
 	// app.connect_queue overflowing. reconnect: true, with a retry_after (FR-6, NFR-4).
 	//
-	// Note that docs/04-integration.md §1.3 still shows 3000 in its status table. That is
-	// a leftover from before this code existed; FR-6, docs/03-client-protocol.md §7 and
-	// docs/13-review-findings.md M14 all say 3008, and they win.
+	// This is also where a webhook 403 lands. 403 means the application rejected the
+	// REQUEST — a bad signature, a timestamp outside the window, an unknown key mid
+	// rotation — which is a gateway-side fault and must never be reported to users as a
+	// permanent refusal. A replica whose clock has drifted gets 403 forever; as 3008 its
+	// clients retry onto healthy replicas, as 3003 they would be locked out until a human
+	// noticed (docs/04-integration.md §1.3, FR-6).
 	CloseAuthUnavailable CloseCode = 3008
 
 	// CloseRevoked (3501) means the application published a control-channel disconnect

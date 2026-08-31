@@ -37,11 +37,14 @@ webhook response against the connection and MUST NOT subscribe that connection t
 channel not matching a grant.
 *Accept:* a subscribe to an ungranted channel returns error 103.
 
-**FR-6 — Distinguish refusal from failure.** A webhook 401 or 403 at connect MUST close
-with 3003, `reconnect: false`. A 5xx, timeout, queue overflow, or `connect_timeout` MUST
-close with 3008, `reconnect: true`, carrying `retry_after`. The two MUST NOT share a code.
-*Accept:* both paths tested; codes and `reconnect` differ, and 401 is not retried while
-5xx is, up to `webhook_retries`.
+**FR-6 — Distinguish refusal from failure.** A webhook **401** MUST close with 3003,
+`reconnect: false`. A **403**, 5xx, timeout, queue overflow, `connect_timeout`, or any
+status not listed in `04-integration.md` §1.3 MUST close with 3008, `reconnect: true`,
+carrying `retry_after`. The two MUST NOT share a code.
+*Accept:* both paths tested and distinguishable by type; 401 is not retried while 5xx is,
+up to `webhook_retries`; a 403 yields the transient result and is logged at ERROR and
+counted separately, because a clock-skewed replica returning 403 forever must degrade to
+its peers rather than permanently lock out every user it serves.
 
 **FR-7 — Heartbeat.** The gateway MUST send websocket-level pings every
 `server.ping_interval` (default 25s) and MUST close a connection whose pong does not
@@ -122,9 +125,13 @@ close open sockets with code 3000 and `reconnect: true`, and exit within
 `server.drain_timeout` (default 20s).
 *Accept:* clients reconnect after a rolling restart with no manual intervention.
 
-**FR-24 — Forwarded address.** `X-St-Forwarded-For` MUST be derived from the socket peer
-address unless the peer is inside `server.trusted_proxies`, in which case the leftmost
-untrusted hop of the incoming `X-Forwarded-For` is used. A client-supplied
+**FR-24 — Forwarded address.** `X-St-Forwarded-For` MUST be the socket peer address unless
+the peer is inside `server.trusted_proxies`. For a trusted peer, walk `X-Forwarded-For`
+**from the rightmost entry leftwards while each hop is trusted, and take the first
+untrusted address**; if every entry is trusted, use the socket peer. Taking the *leftmost*
+untrusted entry instead lets a client behind a trusted proxy prepend a fake hop and have
+the gateway forward it — the spoofing this requirement exists to prevent, surviving one
+layer in. A client-supplied
 `X-Forwarded-For` from an untrusted peer MUST be discarded, never forwarded.
 *Accept:* a handshake carrying `X-Forwarded-For: 127.0.0.1` from an untrusted peer reaches
 the webhook with the real peer address. Passing it through would let an attacker trigger
