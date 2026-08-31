@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,6 +243,33 @@ func httpGet(t *testing.T, url, token string) (int, string) {
 // §4.1). A publish issued before that Sync lands reaches nobody, which is correct
 // behaviour and a race in a test that publishes immediately. This is the synchronisation
 // point, not a delay: it spins on the bus's own health and only the timeout is a wait.
+// waitLog blocks until every substring appears in the captured log, or fails the test.
+//
+// A log line is written by whichever goroutine did the work, so it is not ordered against
+// the frame the client receives: a connect reply can arrive before the reader has written
+// the subscribe line it describes. Asserting on the buffer the instant a frame lands
+// therefore passes on an idle laptop and fails on a loaded CI runner, which is exactly how
+// this was found. Wait for the observable state instead, the same way waitSubscribed does.
+func waitLog(t *testing.T, buf *syncBuffer, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(waitFor)
+	for time.Now().Before(deadline) {
+		logs := buf.String()
+		missing := false
+		for _, w := range want {
+			if !strings.Contains(logs, w) {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("waiting for %q in the log, got:\n%s", want, buf.String())
+}
+
 func waitSubscribed(t *testing.T, b interface{ Health() bus.Health }, n int) {
 	t.Helper()
 	deadline := time.Now().Add(waitFor)

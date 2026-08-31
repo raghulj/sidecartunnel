@@ -277,10 +277,7 @@ func TestGateway_ConnectSubscribeAndDeliver_FR1_FR5_FR12(t *testing.T) {
 	// GET /channels:
 	// a grep for the message and the channel name answers "was anybody subscribed?",
 	// which is the question the runbook's "nobody receives anything" entry asks.
-	if logs := f.logs.String(); !strings.Contains(logs, `"msg":"subscribe"`) ||
-		!strings.Contains(logs, `"channel":"room-4410"`) {
-		t.Fatalf("the subscribe was not logged with its channel:\n%s", logs)
-	}
+	waitLog(t, f.logs, `"msg":"subscribe"`, `"channel":"room-4410"`)
 
 	// A publish on the bus, which is what an application's Redis PUBLISH becomes. The
 	// hub reconciles off the request path, so the subscription reaches the bus a moment
