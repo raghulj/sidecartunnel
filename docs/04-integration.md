@@ -236,6 +236,13 @@ HTTPS call a hosted service requires.
 Reserved channel `{bus.prefix}_control`, consumed by every replica. Clients can never
 subscribe to it: any channel beginning `_` is refused with error 103.
 
+**The control channel is a permanent member of the reconciler's desired set**, seeded at
+startup and never removed. `Bus.Sync` sets the subscription set *exactly*, so a desired set
+computed only from live client subscriptions unsubscribes the replica from control on the
+very first reconciliation — after which every revocation is silently ignored. The gateway
+keeps accepting connections and delivering messages, so nothing looks wrong until someone
+tries to cut off a user and nothing happens.
+
 Control messages are **signed**, and unsigned or stale ones are dropped and counted.
 
 The action travels as a **JSON string**, not as sibling fields, and the signature covers

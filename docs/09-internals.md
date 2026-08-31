@@ -104,10 +104,12 @@ func (h *Hub) Subscribe(c *Conn, key string) {
     if !ok { set = map[*Conn]struct{}{}; h.channels[key] = set }
     set[c] = struct{}{}
     c.subs[key] = struct{}{}          // same lock — see 4.2
-    first := len(set) == 1
+    if len(set) == 1 {
+        h.desired[key] = struct{}{}   // ALSO under the lock — see below
+    }
     h.mu.Unlock()
 
-    if first { h.desired.Store(key, struct{}{}); h.markDirty() }
+    h.markDirty()                     // the only thing that happens after unlock
 }
 
 func (h *Hub) markDirty() {
@@ -115,6 +117,14 @@ func (h *Hub) markDirty() {
     select { case h.wake <- struct{}{}: default: }   // never blocks
 }
 ```
+
+An earlier version of this sketch mutated `desired` *after* releasing the lock. That is
+wrong, and subtly so: a concurrent subscribe and unsubscribe of the same channel can land
+the two `desired` writes in the opposite order to the two map mutations, leaving the
+desired set disagreeing with the map in either direction — a channel held with no
+subscription upstream, or subscribed upstream with no holders. Everything that must agree
+with the map is mutated in the same critical section as the map. Only `markDirty`, which
+cannot block, happens after unlock.
 
 **4.2 Subscriptions are state, not events — and `Conn.subs` moves under the hub lock.**
 
