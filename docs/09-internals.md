@@ -6,18 +6,19 @@ where mistakes turn into intermittent failures that are miserable to reproduce.
 ## 1. Package layout
 
 ```
-cmd/sidecartunnel/main.go     flags, config load, wiring, signal handling
-internal/config/              parse, defaults, validation (08-config.md)
-internal/proto/               frame types, encode/decode, error and close codes
-internal/glob/                grant compilation and matching
-internal/conn/                one connection: reader, writer, subscriptions, lifecycle
-internal/hub/                 channel registry, local fan-out, subscription state
-internal/bus/                 Bus interface, redis and memory implementations
-internal/webhook/             connect client: signing, timeout, concurrency cap, cache
-internal/admin/               admin HTTP listener
-internal/metrics/             prometheus collectors
-internal/server/              websocket upgrade, origin check, connection assembly
+cmd/sidecartunnel/     main, wiring, the bus consumer, control verification, healthcheck
+internal/bus/          redis and memory transports
+internal/config/       load, defaults, env overlay, validate
+internal/conn/         one connection: two goroutines, grants, commands
+internal/glob/         grant pattern matching
+internal/hub/          channel registry, fan-out, reconciler, control
+internal/proto/        frame codec and close codes
+internal/server/       listener, upgrade, origin check, GET /health, GET /ready
+internal/webhook/      the connect webhook client
 ```
+
+`internal/metrics/` and `internal/admin/` are gone. `internal/server` gained `probes.go`
+(`GET /health`, `GET /ready`, `StopAccepting`).
 
 Dependency direction is downward only. `hub` does not import `conn`; it holds an interface
 with `Send([]byte)` and `Close(code, reason)` so the two can be tested apart. `bus` knows
@@ -137,7 +138,7 @@ because the shape recurs:
   while every socket stayed open and `/ready` stayed 200. Nothing reconnected, nothing
   reconciled, and the runbook had no entry for it.
 - `Bus.Subscribe` returned an error nobody consumed, so one transient failure left a
-  channel locally subscribed and upstream dead, permanently, with no metric.
+  channel locally subscribed and upstream dead, permanently, with no log line.
 - On bus reconnect, the resubscribe sweep raced the live command stream in both directions:
   a channel could end up subscribed with no local holders, or held with no subscription.
 - One channel per call meant a 30,000-channel resubscribe was 30,000 serial round trips —
@@ -192,10 +193,10 @@ send here would stall the fan-out goroutine and therefore the whole channel.
 **4.4 Lock order is hub, then conn — never the reverse.**
 
 Two locks exist. Every path that needs both MUST take `Hub.mu` first. `Close` reads
-`c.subs` and deregisters from the hub; the admin `/channels` handler reads `conn.user` from
-the hub map. Acquire them in opposite orders in two paths and you have a deadlock that
-`-race` does not detect and that only appears under contention. Neither lock is ever held
-while sending on a channel.
+`c.subs` and deregisters from the hub; `Hub.Disconnect` (`internal/hub/control.go`) reads
+the user index under the hub lock before closing. Acquire them in opposite orders in two
+paths and you have a deadlock that `-race` does not detect and that only appears under
+contention. Neither lock is ever held while sending on a channel.
 
 **4.5 Fan-out takes a read lock and copies.**
 
@@ -230,9 +231,9 @@ Splitting the reader from the workers is not premature. Redis enforces
 **disconnects a subscriber that falls behind**. A single goroutine that decodes and fans
 out to 10,000 connections between socket reads will fall behind during a broadcast burst;
 Redis then drops it, the gateway reconnects, resubscribes, and is immediately behind again.
-That oscillation is stable, not transient, and it presents to an operator as
-`st_bus_reconnects_total` climbing against a perfectly healthy Redis — pointing on-call at
-the wrong system entirely.
+That oscillation is stable, not transient, and it presents to an operator as `bus_reconnects`
+in the `/ready` body climbing against a perfectly healthy Redis — pointing on-call at the
+wrong system entirely.
 
 The control channel is consumed on its own goroutine, so a revocation cannot queue behind
 the firehose it may exist to stop.
@@ -273,10 +274,13 @@ documented, and the client's reconciliation covers it (`07-delivery.md` §2).
 
 On `SIGTERM`:
 
-1. Stop accepting upgrades; `/ready` returns 503 immediately.
+1. `Server.StopAccepting()`: new upgrades get 503, `/ready` returns 503, and the listener
+   stays open so the load balancer gets an honest answer instead of a refused connection.
 2. Send `{"disconnect":{"code":3000,"reconnect":true}}` to every connection.
 3. Close sockets, allowing up to `server.drain_timeout`.
-4. Unsubscribe from the bus, close it, exit 0.
+4. Stop the bus consumer.
+5. Close the hub.
+6. Release the bus, exit 0.
 
 Step 2 exists so clients apply their backoff-with-jitter instead of treating an abrupt TCP
 reset as a network blip and retrying immediately. Draining deliberately is what turns a

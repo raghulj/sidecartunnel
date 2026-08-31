@@ -22,8 +22,7 @@ The smallest thing that replaces a hosted service for server-to-client notificat
 - Config load and validation
 - Unit, protocol and integration test layers
 
-Not in M1: expiry, revocation, admin API, metrics, client library. A connection lives
-until it drops.
+Not in M1: expiry, revocation, client library. A connection lives until it drops.
 
 ### M2 — Safe to run
 
@@ -31,9 +30,12 @@ Everything that makes M1 operable by someone who was not there when it was writt
 
 - FR-6, FR-7, FR-16 … FR-20; NFR-4 … NFR-8
 - Revalidation, grant narrowing, control channel, graceful drain
-- Admin API, Prometheus metrics, structured logs
+- `GET /health` and `GET /ready`, structured logs
 - Webhook concurrency cap and cache
 - Failure test layer
+
+M2 shipped with a Prometheus endpoint and an operator API as well. Both have since been
+removed; §2 records why.
 
 M2 is the first version I would put in front of real users.
 
@@ -53,7 +55,7 @@ Only after M2 has run in production long enough to be boring.
 
 - Client events (`publish`), per-namespace, rate limited, requiring both a grant and the
   namespace flag
-- Presence: membership tracking, join/leave, `/presence` on the admin API
+- Presence: membership tracking, join/leave, and whatever surface reports it
 
 Bounded history was listed here and has been removed. `07-delivery.md` §2 argues that
 reconciliation from the application beats any replay buffer, and §2 of this document lists
@@ -71,8 +73,52 @@ statefulness is what the rest of the design spends its budget avoiding.
 | A user, session or permission store | The invariant in `00-overview.md` |
 | Client-to-client durable messaging | Application in the path, always |
 | Redis Cluster or sharded pub/sub | One Redis until a measurement says otherwise |
-| An admin UI | `/channels` and `/metrics` are the interface |
+| An admin UI | There is no admin API to put a UI on, and the log is the interface |
 | Encrypted channels | End-to-end encryption with a server that fans out is theatre; if payloads need encrypting, encrypt them in the application |
+| Prometheus metrics | Below |
+| An operator HTTP API | Below |
+
+### 2.1 Prometheus Metrics — Built, Then Removed
+
+Eighteen metric families were specified before a line of code existed. Nine of them ended
+up with no producer at all and sat permanently at zero.
+
+That is worse than having none. Somebody writes an alert on
+`st_slow_consumer_disconnects_total`, it never fires, and they conclude that clients are
+never dropped. A gauge reading zero because nothing increments it is indistinguishable from
+one reading zero because nothing is wrong, and the difference is exactly what the alert was
+supposed to tell them.
+
+For a gateway serving one application at 20,000 connections, the whole surface was
+ceremony. The structured logs already carry the client id as a join key across every line a
+connection produces, which answers the questions that actually get asked during an
+incident. The cost was a package, a direct dependency and its transitive tail, and a
+scrape-time sampler.
+
+`GET /metrics` returns 404. It is not coming back, and re-adding it in six months without
+re-reading this section would be re-adding the same nine permanently-zero families.
+
+### 2.2 An Operator HTTP API — Built, Then Removed
+
+`GET /channels`, `GET /channels/{channel}` and `POST /disconnect` lived on a second HTTP
+listener bound to loopback, behind a bearer token.
+
+The second listener existed so that a proxy misconfiguration could not expose `/channels`
+publicly. That is a defence against a configuration mistake rather than against an
+attacker, and it cost a package, an HTTP server, two configuration keys and a credential to
+rotate.
+
+`POST /disconnect` was a second door onto the hub call the control channel already makes,
+and the worse of the two: the control channel is signed, it reaches every replica instead
+of the one being curled, and it flushes the connect-webhook cache so a revoked user cannot
+reconnect on a cached grant. `GET /channels` was a convenience over grepping a log this
+process already writes — subscribe and unsubscribe are logged at info with the client id
+and the channel, so `grep '"msg":"subscribe"' | grep room-4410` answers the same question
+without a listener, a token or a package.
+
+What is left on `server.listen` is `GET /health` and `GET /ready`, unauthenticated. They
+report that the process is up and that it can reach Redis. Putting a credential on those
+would be protecting the two facts every health endpoint on the internet already publishes.
 
 ## 3. Open decisions
 
@@ -119,14 +165,16 @@ language less likely to happen. I am inclined to keep it thin and let applicatio
 on top — but I have not yet written an application against it, which is the only way to
 find out.
 
-### 3.4 Control channel, or admin API, for revocation?
+### 3.4 Control channel, or admin API, for revocation? — resolved, cut
 
-Both exist and they overlap. The bus version is a one-liner for the application and needs
-no credential; the HTTP version is what an operator reaches for and returns a result.
+Both existed and they overlapped: the bus version a one-liner for the application needing
+no credential, the HTTP version what an operator reached for, returning a count.
 
-Keeping both is the current answer and it may be one too many. If the application never
-uses the HTTP one and operators never use the bus one, that is fine — they have different
-users. If they diverge in behaviour, that is a bug and one of them should go.
+"Keeping both may be one too many" was the answer here for a while. It was one too many.
+The control channel won on the merits — it is signed, it reaches every replica rather than
+the one being curled, and it flushes the connect-webhook cache so a revoked user cannot
+reconnect on a cached grant, which the HTTP route did only because main's adapter
+remembered to. §2.2 has the rest.
 
 ### 3.5 Multi-app — resolved, cut
 

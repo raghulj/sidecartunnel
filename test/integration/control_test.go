@@ -101,8 +101,9 @@ func TestControlDisconnectByUserSpansReplicas(t *testing.T) {
 	// way for a revocation to fail. Remove compounded it by deleting under the current user
 	// id, leaking one dead sink per connection for the process lifetime.
 	//
-	// Found twice independently: by this suite, and by running the binary and watching
-	// POST /disconnect {"user":"u-7"} answer {"disconnected":0} against a connected u-7.
+	// Found twice independently: by this suite, and by running the binary and watching the
+	// admin API's POST /disconnect — since removed (docs/12-roadmap.md §2.2) — answer
+	// {"disconnected":0} against a connected u-7.
 	// Fixed by tracking the bucket a sink is actually filed under (hub.userOf) and
 	// re-indexing on re-registration.
 

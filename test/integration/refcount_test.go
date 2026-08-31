@@ -6,9 +6,8 @@ import "testing"
 // per channel however many local connections hold it, and drops it when the last one
 // goes.
 //
-// The count asserted is the bus's own confirmed subscription set —
-// st_bus_subscriptions_current, the metric FR-10's acceptance criterion names — so it is
-// what Redis agrees to, not what the gateway believes. It always includes the reserved
+// The count asserted is the bus's own confirmed subscription set, so it is what Redis
+// agrees to, not what the gateway believes. It always includes the reserved
 // control channel, which is seeded into the desired set at startup and never removed: a
 // desired set computed only from client subscriptions would unsubscribe the replica from
 // control on the first reconciliation and silently disable every revocation

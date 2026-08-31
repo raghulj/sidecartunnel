@@ -136,7 +136,10 @@ exactly the kind of thing that passes review and fails under the detector.
 - Redis itself, or the websocket library. Test the code that uses them.
 - Exact wire bytes of a frame beyond one round-trip test per type. Assert on the decoded
   structure; brittle byte assertions make every field addition a test rewrite.
-- Metric values, **except where a requirement names one**. FR-2, FR-10 and FR-14 have
-  metric-valued acceptance criteria and those must be asserted. Beyond them, assert a
-  metric exists and moves; exact counts couple tests to incidental behaviour and get
-  deleted the first time they are wrong.
+- Exact log line wording, **except where a requirement names it**. FR-2 and FR-10 are
+  asserted through the observable behaviour they always described — a 403 response, one
+  upstream subscription — never a log scrape. FR-14 is log-valued: the dropped-oversize
+  log line, with the channel name, is the acceptance criterion itself, so it is the one
+  line in this file worth asserting exactly. Beyond FR-14, assert that a log line fires and
+  its level; asserting the rest of its wording couples a test to phrasing and it gets
+  deleted the first time that phrasing changes.

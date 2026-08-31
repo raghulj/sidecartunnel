@@ -31,13 +31,12 @@ single-replica local experiment, set `replicas: 1` and add
 
 | Setting | Value | Consequence Of The Default |
 |---|---|---|
-| `client-output-buffer-limit pubsub` | `256mb 64mb 60` | At the default `32mb 8mb 60`, Redis disconnects the gateway during a broadcast burst and the resubscribe leaves it immediately behind again. The oscillation is stable, not transient, and reads as `st_bus_reconnects_total` climbing against a healthy Redis. |
+| `client-output-buffer-limit pubsub` | `256mb 64mb 60` | At the default `32mb 8mb 60`, Redis disconnects the gateway during a broadcast burst and the resubscribe leaves it immediately behind again. The oscillation is stable, not transient, and reads as `bus_reconnects` in `GET /ready` climbing against a healthy Redis. |
 | `update_config.order` | `start-first` | `stop-first` takes the fleet to zero replicas mid-update, and every client reconnects into nothing. |
 | `update_config.delay` | `30s` | Must exceed `server.drain_timeout` (20s). Below it, the next replica starts while the previous one is still draining, and clients spread across `drain_spread` land on a container that is about to go away. |
 | `stop_grace_period` | `30s` | Also above `drain_timeout`, so a stopping replica finishes its drain instead of being killed mid-sentence. |
 | Redis database index | `3` | Sharing index 0 with a cache means someone's `FLUSHDB` arrives during an incident. Pub/sub is unaffected by it; the confusion is not. |
 | `healthcheck.test` | `/sidecartunnel healthcheck` | The image has no shell and no curl. The subcommand checks liveness only — a bus-dependent healthcheck kills the whole fleet during a Redis restart. |
-| No published admin port | — | `admin.listen` defaults to `127.0.0.1:9001` and the image exposes `8000` only, so `docker run -P` cannot publish the admin API by accident. |
 
 ## Compose Versus Swarm
 
@@ -77,7 +76,7 @@ anything that is not the gateway.
 | Gateway is alive | `docker compose exec sidecartunnel /sidecartunnel healthcheck` |
 | Redis buffer limit took effect | `docker compose exec redis redis-cli config get client-output-buffer-limit` |
 | Publishing reaches subscribers | `docker compose exec redis redis-cli -n 3 publish st:room-4410 '{"event":"ping","data":{}}'` |
-| Channel is actually subscribed | `GET /channels` on the admin API, from inside the container |
+| Channel is actually subscribed | `docker compose logs sidecartunnel \| grep '"msg":"subscribe"' \| grep room-4410` |
 
 The publish key is `{bus.prefix}{channel}` exactly — `st:room-4410` for channel
 `room-4410`. A wrong prefix is silent: Redis accepts the publish, nobody is listening, and

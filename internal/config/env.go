@@ -38,9 +38,9 @@ var (
 //
 // Unrecognised ST_ variables are ignored rather than rejected. The prefix is not
 // exclusively ours in practice — docs/08-config.md §4's own worked example expects
-// ST_WEBHOOK_SECRET and ST_ADMIN_TOKEN to exist in the environment for the deployment to
-// substitute — so refusing to start on one would break the documented deployment. A
-// mistyped key is caught instead by the required-key rules in Validate.
+// ST_WEBHOOK_SECRET to exist in the environment for the deployment to substitute — so
+// refusing to start on one would break the documented deployment. A mistyped key is caught
+// instead by the required-key rules in Validate.
 func applyEnv(c *Config) error {
 	if err := applyEnvStruct(reflect.ValueOf(c).Elem(), ""); err != nil {
 		return err

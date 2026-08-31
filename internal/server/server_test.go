@@ -325,6 +325,7 @@ func TestNew_RequiresItsDependencies(t *testing.T) {
 	}{
 		{name: "no config", opts: func(o *Options) { o.Config = nil }, want: "Options.Config"},
 		{name: "no hub", opts: func(o *Options) { o.Hub = nil }, want: "Options.Hub"},
+		{name: "no bus", opts: func(o *Options) { o.Bus = nil }, want: "Options.Bus"},
 		{
 			name: "an unparseable rate limit",
 			opts: func(o *Options) {
@@ -352,7 +353,7 @@ func TestNew_RequiresItsDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			opts := Options{Config: cfg, Hub: newTestHub(t), Webhook: newStubWebhook()}
+			opts := Options{Config: cfg, Hub: newTestHub(t), Bus: memoryBus(t), Webhook: newStubWebhook()}
 			tt.opts(&opts)
 			_, err := New(opts)
 			if err == nil {
@@ -377,7 +378,7 @@ func TestNew_BuildsTheWebhookClientFromConfig_FR24(t *testing.T) {
 	cfg.App.WebhookConcurrency = 8
 	cfg.App.ConnectQueue = 16
 
-	srv, err := New(Options{Config: cfg, Hub: newTestHub(t), Log: slog.New(slog.DiscardHandler)})
+	srv, err := New(Options{Config: cfg, Hub: newTestHub(t), Bus: memoryBus(t), Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

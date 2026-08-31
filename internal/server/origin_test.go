@@ -69,7 +69,7 @@ func TestOrigin_ExactMatchOnly_FR2(t *testing.T) {
 				t.Fatalf("webhook calls = %d, want 0: a rejected Origin must reach no application (FR-2)", got)
 			}
 			if got := r.srv.Stats().OriginRejected; got != 1 {
-				t.Fatalf("OriginRejected = %d, want 1 (st_origin_rejected_total)", got)
+				t.Fatalf("OriginRejected = %d, want 1", got)
 			}
 		})
 	}

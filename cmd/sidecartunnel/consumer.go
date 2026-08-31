@@ -3,13 +3,11 @@ package main
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/hub"
-	"github.com/raghulj/sidecartunnel/internal/metrics"
 )
 
 // controlQueue is the depth of the queue between the dispatch workers and the control
@@ -26,23 +24,18 @@ const controlQueue = 64
 // that decoded and fanned out to 10,000 connections between socket reads would fall
 // behind during a broadcast burst, be evicted by Redis's client-output-buffer-limit,
 // reconnect, resubscribe and be immediately behind again — a stable oscillation that
-// presents as st_bus_reconnects_total climbing against a perfectly healthy Redis.
+// presents as /ready's bus_reconnects climbing against a perfectly healthy Redis.
 //
 // The control channel is consumed on its own goroutine, so a revocation cannot queue
 // behind the firehose it may exist to stop.
 type consumer struct {
-	bus     bus.Bus
-	hub     *hub.Hub
-	metrics *metrics.Metrics
-	log     *slog.Logger
+	bus bus.Bus
+	hub *hub.Hub
+	log *slog.Logger
 
 	// secret is control.secret. It is the only secret this process holds outside the
 	// webhook client, and it never reaches a log line (NFR-7).
 	secret []byte
-
-	// prefix is bus.prefix, used to recover the bare channel name for the namespace
-	// metric label. The hub's own keys stay prefixed (FR-21).
-	prefix string
 
 	// flush discards every cached webhook answer. It runs on a control disconnect,
 	// because a cached entry otherwise survives a revocation and a suspended user
@@ -63,7 +56,7 @@ type consumer struct {
 // newConsumer builds the fan-out top half. workers below one is raised to one: a consumer
 // with no workers is a gateway that accepts connections, reports healthy and delivers
 // nothing.
-func newConsumer(b bus.Bus, h *hub.Hub, m *metrics.Metrics, log *slog.Logger, secret []byte, prefix string, workers int, flush func(), now func() time.Time) *consumer {
+func newConsumer(b bus.Bus, h *hub.Hub, log *slog.Logger, secret []byte, workers int, flush func(), now func() time.Time) *consumer {
 	if workers < 1 {
 		workers = 1
 	}
@@ -76,10 +69,8 @@ func newConsumer(b bus.Bus, h *hub.Hub, m *metrics.Metrics, log *slog.Logger, se
 	return &consumer{
 		bus:      b,
 		hub:      h,
-		metrics:  m,
 		log:      log,
 		secret:   secret,
-		prefix:   prefix,
 		flush:    flush,
 		workers:  workers,
 		now:      now,
@@ -140,23 +131,20 @@ func (c *consumer) dispatch(ctx context.Context, in <-chan bus.Message) {
 	}
 }
 
-// deliver hands one message to the hub and records it.
+// deliver hands one message to the hub.
 //
-// A malformed envelope is dropped and counted, never logged with its payload: the whole
-// point of the drop counter is that the payload must not reach the log
-// (docs/04-integration.md §2.2, NFR-7).
+// A malformed envelope is dropped and logged with its channel and the decode error, never
+// with its payload: an envelope that failed to decode is still an application's data, and
+// the log is the wrong place for it (docs/04-integration.md §2.2, NFR-7).
 func (c *consumer) deliver(msg bus.Message) {
-	ns := c.metrics.Namespace(strings.TrimPrefix(msg.Channel, c.prefix))
-	c.metrics.MessagePublished(ns)
 	if err := c.hub.Dispatch(msg); err != nil {
-		c.metrics.MessageDropped(metrics.DropMalformed)
 		c.log.Debug("bus.dispatch dropped a message", "channel", msg.Channel, "err", err)
 	}
 }
 
 // control verifies and applies control messages on its own goroutine (FR-23).
 //
-// Every rejection is counted by reason and logged at warn without the payload. An
+// Every rejection is logged at warn, with its reason and without the payload. An
 // unsigned message is somebody publishing to the control channel who should not be; a
 // stale one is usually this replica's clock. Neither is applied partially.
 func (c *consumer) control(ctx context.Context) {
@@ -180,7 +168,6 @@ func (c *consumer) control(ctx context.Context) {
 func (c *consumer) apply(msg bus.Message) {
 	cmd, reason, err := verifyControl(c.secret, c.now(), msg.Payload)
 	if err != nil {
-		c.metrics.ControlRejected(reason)
 		c.log.Warn("control message rejected", "reason", string(reason), "err", err)
 		return
 	}
@@ -188,9 +175,8 @@ func (c *consumer) apply(msg bus.Message) {
 		// coverage: verifyControl has already run hub.ParseControl over the same bytes,
 		// which is the same validation Hub.Control repeats on a message built by hand.
 		// It is checked rather than discarded so that a future action added to one and
-		// not the other is counted instead of silently ignored.
-		c.metrics.ControlRejected(metrics.ControlMalformed)
-		c.log.Warn("control message refused by the hub", "err", err)
+		// not the other is logged instead of silently ignored.
+		c.log.Warn("control message refused by the hub", "reason", string(controlMalformed), "err", err)
 		return
 	}
 	if cmd.Action == hub.ActionDisconnect {

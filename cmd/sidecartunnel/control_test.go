@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/hub"
-	"github.com/raghulj/sidecartunnel/internal/metrics"
 )
 
 // now is the fixed clock the control tests measure the ±300s window against. A fake clock
@@ -34,9 +33,9 @@ func TestVerifyControl_Accepts(t *testing.T) {
 	}
 }
 
-// TestVerifyControl_Rejections is the table FR-23 turns on. Each row names the reason
-// st_control_rejected_total counts it under, because "unsigned", "stale" and "malformed"
-// send an operator to three different places.
+// TestVerifyControl_Rejections is the table FR-23 turns on. Each row names the reason the
+// rejection is logged under, because "unsigned", "stale" and "malformed" send an operator
+// to three different places.
 func TestVerifyControl_Rejections(t *testing.T) {
 	body := `{"action":"disconnect","user":"u-7"}`
 	valid := signControl(testControlSecret, controlNow, body)
@@ -59,26 +58,26 @@ func TestVerifyControl_Rejections(t *testing.T) {
 		secret  string
 		now     time.Time
 		payload []byte
-		want    metrics.ControlReason
+		want    controlReason
 		names   string
 	}{
-		{"not an object", testControlSecret, controlNow, []byte("["), metrics.ControlMalformed, "JSON object"},
+		{"not an object", testControlSecret, controlNow, []byte("["), controlMalformed, "JSON object"},
 		{"signature is not hex", testControlSecret, controlNow,
-			signedWith(t, "zz"), metrics.ControlUnsigned, "hexadecimal"},
+			signedWith(t, "zz"), controlUnsigned, "hexadecimal"},
 		{"wrong secret", "another-secret-long-enough-to-be-legal-at-32-bytes", controlNow, valid,
-			metrics.ControlUnsigned, "signature"},
+			controlUnsigned, "signature"},
 		{"body swapped under the signature", testControlSecret, controlNow, tampered,
-			metrics.ControlUnsigned, "signature"},
+			controlUnsigned, "signature"},
 		{"too old", testControlSecret, controlNow.Add(controlSkew + time.Second), valid,
-			metrics.ControlStale, "window"},
+			controlStale, "window"},
 		{"too far in the future", testControlSecret, controlNow.Add(-controlSkew - time.Second), valid,
-			metrics.ControlStale, "window"},
+			controlStale, "window"},
 		{"signed but no target", testControlSecret, controlNow,
 			signControl(testControlSecret, controlNow, `{"action":"disconnect"}`),
-			metrics.ControlMalformed, "target"},
+			controlMalformed, "target"},
 		{"signed but not JSON", testControlSecret, controlNow,
 			signControl(testControlSecret, controlNow, `nope`),
-			metrics.ControlMalformed, "JSON object"},
+			controlMalformed, "JSON object"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

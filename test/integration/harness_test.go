@@ -21,10 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/raghulj/sidecartunnel/internal/admin"
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
 	"github.com/raghulj/sidecartunnel/internal/hub"
@@ -427,8 +425,8 @@ func signControl(secret, body string, ts time.Time) string {
 // replica
 // ---------------------------------------------------------------------------
 
-// replica is one gateway: a bus connection, a hub, a bus consumer, a client listener and
-// an admin listener.
+// replica is one gateway: a bus connection, a hub, a bus consumer, and one listener
+// carrying the websocket endpoint, GET /health and GET /ready.
 type replica struct {
 	t   *testing.T
 	cfg *config.Config
@@ -438,7 +436,6 @@ type replica struct {
 	srv   *server.Server
 	web   *webhook.Client
 	http  *httptest.Server
-	adm   *httptest.Server
 	cons  *consumer
 	index int
 
@@ -484,7 +481,7 @@ func (c *cluster) newReplica(i int, secret string, mutate func(*config.Config)) 
 		t.Fatalf("replica %d: webhook: %v", i, err)
 	}
 
-	srv, err := server.New(server.Options{Config: cfg, Hub: h, Webhook: web, Log: log})
+	srv, err := server.New(server.Options{Config: cfg, Hub: h, Bus: b, Webhook: web, Log: log})
 	if err != nil {
 		t.Fatalf("replica %d: server: %v", i, err)
 	}
@@ -501,25 +498,12 @@ func (c *cluster) newReplica(i int, secret string, mutate func(*config.Config)) 
 	r.cons = startConsumer(t, h, b, c.controlSecret, cfg.Bus.DispatchWorkers)
 	r.http = httptest.NewServer(srv.Handler())
 
-	adminSrv, err := admin.New(admin.Options{
-		Bus:        b,
-		Registry:   nopRegistry{},
-		Gatherer:   prometheus.NewRegistry(),
-		ReadyGrace: cfg.Bus.ReadyGrace.Duration(),
-		Logger:     log,
-	})
-	if err != nil {
-		t.Fatalf("replica %d: admin: %v", i, err)
-	}
-	r.adm = httptest.NewServer(adminSrv.Handler())
-
 	// One cleanup, in one order, because the order is a contract: drain the connections,
 	// stop the listeners, close the bus so the consumer's range ends, wait for it, and
 	// only then close the hub — hub.Close may not run concurrently with Dispatch.
 	t.Cleanup(func() {
 		r.drain()
 		r.http.Close()
-		r.adm.Close()
 		if err := b.Close(); err != nil {
 			t.Errorf("replica %d: bus close: %v", i, err)
 		}
@@ -582,7 +566,6 @@ func testConfig(prefix, connectURL, webhookSecret, controlSecret string) *config
 			MaxChannelLength:        255,
 		},
 		Control: config.Control{Secret: controlSecret, RefreshSpread: config.Duration(60 * time.Second)},
-		Admin:   config.Admin{Listen: "127.0.0.1:0"},
 		Log:     config.Log{Level: "warn", Format: "text"},
 	}
 }
@@ -593,22 +576,23 @@ func (r *replica) wsURL() string {
 }
 
 // upstream is the number of channels this replica has subscribed on the bus, confirmed by
-// Redis. It is st_bus_subscriptions_current, whose value FR-10's acceptance criterion
-// names, and it always includes the control channel.
+// Redis. It is the count FR-10's acceptance criterion names, and it always includes the
+// control channel.
 func (r *replica) upstream() int { return r.bus.Health().Subscriptions }
 
-// reconnects is st_bus_reconnects_total. Climbing against a healthy Redis is the M8
-// signature: eviction for a slow subscriber, not an unstable server.
+// reconnects is the number of bus transports established after the first. Climbing
+// against a healthy Redis is the M8 signature: eviction for a slow subscriber, not an
+// unstable server.
 func (r *replica) reconnects() uint64 { return r.bus.Health().Reconnects }
 
-// ready is the status code of the admin listener's GET /ready.
+// ready is the status code of GET /ready.
 //
 // Readiness, and only readiness: 503 once the bus has been down longer than
 // bus.ready_grace. Connections stay open and silent while the bus is down; this reports
 // it, and nothing closes (NFR-8).
 func (r *replica) ready() int {
 	r.t.Helper()
-	return r.adminStatus("/ready")
+	return r.probeStatus("/ready")
 }
 
 // drain shuts this replica down gracefully (FR-19). It is idempotent, so a test may drain
@@ -746,17 +730,6 @@ func parseSignedControl(secret string, payload []byte) (hub.Control, error) {
 	return hub.ParseControl([]byte(envelope.Body))
 }
 
-// nopRegistry satisfies admin.Registry for the routes these tests do not exercise.
-//
-// Only /ready and /health are driven here, and both are answered from the bus. The
-// adapter from *hub.Hub to admin.Registry belongs to main's wiring and does not exist
-// yet, so there is nothing real to plug in.
-type nopRegistry struct{}
-
-func (nopRegistry) Channels() []admin.Channel            { return nil }
-func (nopRegistry) Channel(string) (admin.Channel, bool) { return admin.Channel{}, false }
-func (nopRegistry) Disconnect(admin.Target) (int, error) { return 0, nil }
-
 // ---------------------------------------------------------------------------
 // waiting
 // ---------------------------------------------------------------------------
@@ -800,26 +773,29 @@ func waitUpstream(t *testing.T, r *replica, n int) {
 	})
 }
 
-// health is the status code of the admin listener's GET /health.
+// health is the status code of GET /health.
 //
 // It is liveness and must answer 200 while the process runs, whatever the bus is doing. A
 // /health that consulted the bus, wired to a liveness probe, would kill every replica
 // simultaneously during a Redis restart (FR-20, docs/13-review-findings.md M20).
 func (r *replica) health() int {
 	r.t.Helper()
-	return r.adminStatus("/health")
+	return r.probeStatus("/health")
 }
 
-// adminStatus performs one GET against the admin listener and returns its status.
-func (r *replica) adminStatus(path string) int {
+// probeStatus performs one GET against this replica's listener and returns its status.
+//
+// /health and /ready share the listener the websockets are on. The loopback listener they
+// used to have went with the operator API it was carrying (docs/12-roadmap.md §2).
+func (r *replica) probeStatus(path string) int {
 	r.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), readBudget)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.adm.URL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.http.URL+path, nil)
 	if err != nil {
 		r.t.Fatalf("build %s request: %v", path, err)
 	}
-	resp, err := r.adm.Client().Do(req)
+	resp, err := r.http.Client().Do(req)
 	if err != nil {
 		r.t.Fatalf("GET %s: %v", path, err)
 	}

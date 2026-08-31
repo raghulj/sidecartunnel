@@ -83,10 +83,9 @@ test that runs two gateway instances against one Redis, not a reading of the cod
 
 ## 6. Dependencies
 
-The target **runtime** dependency set is four: a websocket library (`gorilla/websocket`),
-a Redis client (`redis/go-redis`), a YAML parser (`yaml.v3`), and the Prometheus client. A
-fifth needs a reason written into the commit message. No framework, no DI container, no
-code generation, no ORM.
+The target **runtime** dependency set is three: a websocket library (`gorilla/websocket`),
+a Redis client (`redis/go-redis`), and a YAML parser (`yaml.v3`). A fourth needs a reason
+written into the commit message. No framework, no DI container, no code generation, no ORM.
 
 **Test-only dependencies are budgeted separately and held to one rule: they must not be
 able to reach a release binary.** `alicebob/miniredis` is the one so far. It earns its

@@ -191,7 +191,7 @@ permanently locked out during an application deploy.
 
 **Never `return nil` after a non-nil error.** `nilerr` is on. This is how the earlier
 design's `Bus.Subscribe` failure went unnoticed forever: one transient error, swallowed, and
-a channel that was locally subscribed and upstream dead with no metric and no log line
+a channel that was locally subscribed and upstream dead with no log line at all
 (`13-review-findings.md` M5).
 
 **No naked returns.** A bare `return` in a function with named results makes the reader
@@ -216,16 +216,14 @@ constructors, and stored on the struct that uses them.
 
 This one gets pushback because it is more typing, so here is what it buys, concretely: two
 tests in the same package can configure the gateway differently and run at the same time.
-With a global config, or a global Prometheus registry, or a global logger, they cannot —
-they collide, someone adds `t.Parallel()` removal or a mutex around the whole suite, and
-the suite gets slow enough that people stop running it. `promauto`'s default registerer is
-the specific trap here: it is convenient, it is a global, and it makes a second registry in
-one process panic on duplicate registration.
+With a global config, or a global logger, they cannot — they collide, someone adds
+`t.Parallel()` removal or a mutex around the whole suite, and the suite gets slow enough
+that people stop running it.
 
 The other thing it buys is that the dependency graph is visible in the constructor
-signatures. `NewHub(bus, metrics, log)` says what a hub needs. A hub that reaches for
-`metrics.Default()` says nothing, and by the time it needs a fourth global nobody can tell
-what it touches.
+signatures. `server.New(Options{Config, Hub, Bus, Webhook, Log})` says what a server needs.
+A server that reaches for `config.Default()` says nothing, and by the time it needs a
+fourth global nobody can tell what it touches.
 
 Constants are fine. An immutable package-level table is fine. Anything written at runtime
 is not.
@@ -288,17 +286,16 @@ output, assert it contains neither the cookie value nor the payload
 (`11-testing.md` §5). It is cheap and it is the only thing that will catch the hurried line.
 
 The same applies to error messages, which end up in logs: an error from `internal/config`
-must name the offending key and must not quote the value of `app.webhook_secrets`,
-`control.secret` or `admin.token`.
+must name the offending key and must not quote the value of `app.webhook_secrets` or
+`control.secret`.
 
 Two more, both of which are one line of code and the whole security model:
 
 - **The `Origin` check happens before anything else, and it is an exact string comparison
   against the configured list.** No suffix matching, no wildcards. Browsers do not apply
   CORS to websocket handshakes but do attach cookies (`05-authorization.md` §5).
-- **Secrets are compared with `crypto/subtle.ConstantTimeCompare`.** The admin bearer
-  token, the webhook signature, the control signature. `==` on a secret is a timing oracle,
-  and it is free to avoid.
+- **Secrets are compared with `crypto/subtle.ConstantTimeCompare`.** The webhook signature,
+  the control signature. `==` on a secret is a timing oracle, and it is free to avoid.
 
 `gosec` is on. When it flags something that is genuinely fine, the suppression carries a
 reason in the same comment, same rule as `// coverage:`.
@@ -336,7 +333,7 @@ documentation change in the same commit (`AGENTS.md` §4).
 | Build | `go build` | Any failure |
 
 Tidiness of `go.mod` is checked too — `go mod tidy` must produce no diff — because the
-dependency budget is four, and an accidental fifth arriving as an indirect requirement is
+dependency budget is three, and an accidental fourth arriving as an indirect requirement is
 how budgets stop being budgets (`AGENTS.md` §6).
 
 Nothing here is skippable with a flag, and none of it should need to be. If a rule is

@@ -82,7 +82,7 @@ In this order.
 | `docker compose stop redis` | Connections stay open and silent | The gateway holds sockets through a bus outage by design |
 | `curl -X POST localhost:8080/admin/users/7/suspend` | Every connection for `u-7` closes with **3501** and does not retry | Revocation over the control channel |
 | Visit `/login/9` | The webhook answers **401**, the page stops retrying | Suspended user, refusal not failure |
-| `curl -H "Authorization: Bearer $ST_ADMIN_TOKEN" sidecartunnel:9001/channels` | The channels the gateway thinks are subscribed | The only way to catch a typo'd channel name |
+| `docker compose logs sidecartunnel \| grep '"msg":"subscribe"' \| grep room-4410` | The clients subscribed to `room-4410` | The way to catch a typo'd channel name — subscribe/unsubscribe are logged at INFO with `client` and `channel` |
 
 ## The Endpoints
 

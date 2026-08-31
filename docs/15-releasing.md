@@ -25,7 +25,7 @@ code that is not in this repository:
 |---|---|---|
 | The websocket wire protocol — frames, error codes, close codes | [`03-client-protocol.md`](03-client-protocol.md) | Every browser client, including third-party implementations |
 | Configuration keys, defaults and validation rules | [`08-config.md`](08-config.md) | Every deployment's environment and YAML |
-| Webhook, Redis envelope, control channel, admin API | [`04-integration.md`](04-integration.md) | The consuming application's own code |
+| Webhook, Redis envelope, control channel | [`04-integration.md`](04-integration.md) | The consuming application's own code |
 
 A change to any of them is a major bump. Everything under `internal/` is free: Go's
 `internal` rule means no external package can import it, so it can be rewritten, split or
@@ -40,16 +40,21 @@ behaviour is.
 | A configuration key renamed or removed | major |
 | A default changed in a way that alters behaviour on an unchanged config | major |
 | Validation tightened so a previously-accepted configuration now fails startup | major |
-| The webhook signature scheme, the Redis envelope, or an admin route changed | major |
-| A metric renamed or removed — alerts are keyed on those names ([`10-operations.md`](10-operations.md) §5) | major |
+| The webhook signature scheme or the Redis envelope changed | major |
+| An HTTP route removed, or its auth requirement changed | major |
 | The module path changed | major |
 | A new optional frame field, or a new command a client may ignore | minor |
 | A new configuration key with a default that preserves current behaviour | minor |
-| A new metric, a new admin route, a new log event | minor |
+| A new HTTP route, or a new log event | minor |
 | The minimum Go version raised | minor |
 | A bug fixed with no observable contract change | patch |
 | Anything under `internal/` — refactor, split, concurrency rewrite | patch |
 | A base image or dependency bump with no behaviour change | patch |
+
+Cutting `GET /metrics`, the whole admin listener and the `admin` configuration block in one
+change is exactly this table applied honestly: two HTTP routes removed and two configuration
+keys removed, each independently major on the rows above. There is no minor-bump reading of
+deleting a public surface.
 
 ### Before 1.0
 
@@ -150,9 +155,9 @@ The image is where the mistakes with consequences live:
 | OCI labels | `docker image inspect --format '{{json .Config.Labels}}' ghcr.io/raghulj/sidecartunnel:v0.2.0` | `source`, `revision`, `version`, `licenses`, `description` |
 | Version metadata | `docker run --rm ghcr.io/raghulj/sidecartunnel:v0.2.0 --version` | The tag, the full commit, and the build date |
 
-`ExposedPorts` is the one worth checking every time. `9001` must never appear: `docker run
--P` publishes every exposed port, and `admin.listen` defaults to loopback precisely so the
-admin API cannot be reached from outside ([`10-operations.md`](10-operations.md) §1).
+`ExposedPorts` is the one worth checking every time: `docker run -P` publishes every
+exposed port, and the image declares exactly one now — `8000/tcp`. Anything else in the
+list is a build regression.
 
 ## 5. Version Metadata
 

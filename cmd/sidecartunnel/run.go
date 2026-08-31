@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/raghulj/sidecartunnel/internal/config"
 )
 
@@ -28,7 +26,7 @@ const usage = `sidecartunnel — an application-agnostic websocket gateway.
 
 Usage:
   sidecartunnel [flags]                run the gateway
-  sidecartunnel healthcheck [flags]    loopback GET /health against admin.listen, exit 0 or 1
+  sidecartunnel healthcheck [flags]    loopback GET /health against server.listen, exit 0 or 1
 
 Configuration is a YAML file, overridden by ST_-prefixed environment variables with __
 for nesting (ST_SERVER__PATH=/socket). See docs/08-config.md.
@@ -97,7 +95,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, signals <
 		return healthcheck(ctx, cfg, stderr)
 	}
 
-	g, err := build(ctx, cfg, prometheus.NewRegistry(), log)
+	g, err := build(ctx, cfg, log)
 	if err != nil {
 		log.Error("startup failed", "err", err)
 		return exitFailure

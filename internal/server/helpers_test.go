@@ -297,6 +297,7 @@ func newRigWithOptions(t *testing.T, mutateOpts func(*Options), mutate ...func(*
 	opts := Options{
 		Config:  cfg,
 		Hub:     h,
+		Bus:     b,
 		Webhook: r.web,
 		Clock:   r.clk,
 		Log:     slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),

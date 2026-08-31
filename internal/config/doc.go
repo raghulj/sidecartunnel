@@ -19,9 +19,8 @@
 //     error naming it. That is what turns a typo, or a key removed by a design decision
 //     such as the cut auth_required, into a loud failure instead of a setting that
 //     quietly does nothing.
-//   - Log a value. This package handles app.webhook_secrets, control.secret and
-//     admin.token; none of them may reach a log line, an error message, or a String
-//     method at any level (NFR-7).
+//   - Log a value. This package handles app.webhook_secrets and control.secret; neither
+//     may reach a log line, an error message, or a String method at any level (NFR-7).
 //   - Become a live-reload mechanism. Configuration is read once at startup. A key that
 //     can change under a running connection is a key whose two readers can disagree.
 package config

@@ -48,5 +48,5 @@ one is wrong, regardless of how much convenience it buys.
 
 Standard Go. `gofmt`, `go vet`, `staticcheck` clean. Table-driven tests. No framework, no
 DI container, no code generation. Dependencies are a cost — the target is `gorilla/websocket`
-or `coder/websocket`, a Redis client, a YAML parser, and the Prometheus client. Adding a
-fifth needs a reason written into the commit message.
+or `coder/websocket`, a Redis client, and a YAML parser. Adding a fourth needs a reason
+written into the commit message.

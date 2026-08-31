@@ -74,9 +74,6 @@ func defaults() *Config {
 		Control: Control{
 			RefreshSpread: Duration(60 * time.Second),
 		},
-		Admin: Admin{
-			Listen: "127.0.0.1:9001",
-		},
 		Log: Log{
 			Level:  "info",
 			Format: "json",

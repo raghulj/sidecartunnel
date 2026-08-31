@@ -66,9 +66,11 @@ func TestDuplicateClientID_RefusesTheSecondConnection_FR18(t *testing.T) {
 	if code := second.closeCode(); code != proto.CloseCode(websocketAbnormalClosure) {
 		t.Fatalf("close code = %d, want an abnormal closure with no protocol code", code)
 	}
-	if got := r.srv.Stats().Current; got != 1 {
-		t.Fatalf("Current = %d, want only the first connection", got)
-	}
+	// Waited for, not read once. The refused connection's reservation is returned by the
+	// deferred release on the handler goroutine, which runs after the socket it just
+	// closed is observable from here — so reading the count the instant the close arrives
+	// races the handler's own return and sees 2.
+	waitFor(t, func() bool { return r.srv.Stats().Current == 1 })
 }
 
 // TestServe_RefusesToStartWhileDraining: SIGTERM can land between the listener being

@@ -164,7 +164,8 @@ type responseBody struct {
 	ExpiresIn *int64   `json:"expires_in"`
 }
 
-// Stats are a Client's cumulative counters, for metrics and for tests. They are read with
+// Stats are a Client's cumulative counters, for tests and for whoever is reading them
+// during an incident. They are read with
 // Client.Stats.
 //
 // Rejected is kept apart from Failed on purpose. A 5xx means the application is unwell; a
@@ -719,7 +720,7 @@ func (c *Client) logRejection(attrs []any, res Unavailable) {
 }
 
 // Stats returns the Client's cumulative counters. It never blocks and is safe to call
-// concurrently, including from a metrics scrape while connects are in flight.
+// concurrently, including while connects are in flight.
 func (c *Client) Stats() Stats {
 	return Stats{
 		Authorized: c.authorized.Load(),
@@ -745,11 +746,11 @@ func (c *Client) Flush() {
 	c.cache.flush()
 }
 
-// InFlight is the number of webhook calls currently issued at the application, for
-// metrics and for tests. It never exceeds app.webhook_concurrency (NFR-4).
+// InFlight is the number of webhook calls currently issued at the application. It never
+// exceeds app.webhook_concurrency (NFR-4).
 func (c *Client) InFlight() int { return len(c.inflight) }
 
-// Waiting is the number of connections queued for an in-flight slot, for metrics and for
-// tests. It never exceeds app.connect_queue. Sustained non-zero means the application is
-// answering more slowly than connections arrive.
+// Waiting is the number of connections queued for an in-flight slot. It never exceeds
+// app.connect_queue. Sustained non-zero means the application is answering more slowly
+// than connections arrive.
 func (c *Client) Waiting() int { return len(c.waiting) }

@@ -75,7 +75,7 @@ Postgres is the source of truth. Realtime is an accelerator in front of it.
 
 ## Channels
 
-A channel is an opaque string. The substring before the first `-` selects a namespace, which selects a block of configuration. Names must be human-readable — they appear in logs, metrics labels and the admin API.
+A channel is an opaque string. The substring before the first `-` selects a namespace, which selects a block of configuration. Names must be human-readable — they appear in the logs, which is where an operator goes to find out who is subscribed to what.
 
 ```
 room-4410              namespace "room"
@@ -100,8 +100,6 @@ Everything is configurable by environment except `namespaces`, which needs the Y
 | `ST_SERVER__DRAIN_SPREAD` | No | `60s` | Window across which reconnects are spread on shutdown |
 | `ST_BUS__PREFIX` | No | `st:` | Redis channel prefix |
 | `ST_APP__MAX_EXPIRY` | No | `6h` | Connection lifetime before re-authorization |
-| `ST_ADMIN__LISTEN` | No | `127.0.0.1:9001` | Admin listener. Loopback by default. |
-| `ST_ADMIN__TOKEN` | No | — | Bearer token. Authenticated routes return 404 when unset. |
 | `ST_LIMITS__MAX_CONNECTIONS` | No | `25000` | Per replica |
 
 Full reference with every key and validation rule: [`docs/08-config.md`](docs/08-config.md).
@@ -119,6 +117,8 @@ The proxy must pass `Upgrade` and `Connection` through, forward `Origin` unmodif
 
 Redis needs `client-output-buffer-limit pubsub` raised from its default of `32mb 8mb 60`. At the default, Redis disconnects the gateway during a broadcast burst and the resubscribe leaves it immediately behind again.
 
+Forward the websocket path and nothing else. `GET /health` and `GET /ready` share the listener with it, and a proxy that forwards `/` publishes both. Neither carries a credential and neither needs one — they report that the process is up and that it can reach Redis, which is what a load balancer is asking and what every health endpoint on the internet already says. Routing only `/ws*` keeps them internal anyway; that is defence in depth, not the reason they are safe.
+
 ### Sizing
 
 Target is **20,000 concurrent connections across two replicas**.
@@ -131,6 +131,68 @@ Target is **20,000 concurrent connections across two replicas**.
 | Reconnect after a replica dies | 10,000 clients over a 60s spread → **~7 concurrent** authorizations against a 16-worker pool |
 
 Without the reconnect spread, those 10,000 clients arrive in about a second: **~400 concurrent authorizations**, which takes the application down. The gateway is nowhere near its own limits at this scale — the application's worker pool is the binding constraint.
+
+## Health Checks
+
+Two routes on `server.listen`, unauthenticated, alongside the websocket endpoint. There is no second listener.
+
+| Route | Answers | Consults the bus |
+|---|---|---|
+| `GET /health` | 200 while the process runs | Never |
+| `GET /ready` | 503 while draining, and 503 once the bus has been down longer than `bus.ready_grace` (default 30s) | Yes |
+
+`GET /ready` carries the detail the status code cannot:
+
+```json
+{"ready":true,"bus_connected":true,"bus_down_for_seconds":0,"bus_reconnects":0,"draining":false}
+```
+
+`bus_reconnects` is cumulative for the life of the process — read it by curling twice and comparing. Climbing while `bus_connected` is `true` is Redis pub/sub output-buffer eviction, not an unstable Redis. `draining` separates "this replica is going away" from "this replica cannot reach Redis", which share a status code and are very different incidents.
+
+### Docker
+
+```dockerfile
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/sidecartunnel", "healthcheck"]
+```
+
+`sidecartunnel healthcheck` performs a loopback `GET /health` against `server.listen` and exits 0 or 1. It is a subcommand rather than a `curl` line because the release image is distroless: no shell, no curl, so the only executable available to probe the process is the process. Exec form matters for the same reason — there is no `/bin/sh` to parse a string form.
+
+### Compose
+
+```yaml
+services:
+  sidecartunnel:
+    image: ghcr.io/…/sidecartunnel:1.0.0
+    healthcheck:
+      test: ["CMD", "/sidecartunnel", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+```
+
+### Kubernetes
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health, port: 8000 }
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet: { path: /ready, port: 8000 }
+  periodSeconds: 5
+  failureThreshold: 2
+```
+
+> **`/ready` must NEVER be wired to a liveness probe.**
+>
+> A Redis restart makes every replica unready at the same instant, because every replica lost the same transport. A liveness probe on `/ready` therefore kills the entire fleet simultaneously, drops every connection, and turns an eight-second Redis blip into a full application outage as 20,000 clients re-authorize together against one connect webhook. `/health` exists precisely so there is something correct to point a liveness probe at, and it never consults the bus for exactly this reason.
+
+The same rule is why `sidecartunnel healthcheck` probes `/health` and only `/health`: a container healthcheck is a liveness signal, and pointing it at the bus rebuilds the outage one container at a time.
+
+`bus.ready_grace` is the other half. It is why a short blip does not pull every replica out of the load balancer at once: readiness tolerates the bus being gone for 30 seconds before reporting 503. Connections stay open and silent throughout — nothing is closed because Redis went away.
 
 ## Local Development
 
@@ -159,13 +221,13 @@ Tests are written before implementations and coverage is gated at **100%** in CI
 | [01-requirements](docs/01-requirements.md) | FR-1..24, NFR-1..9 with acceptance criteria |
 | [02-architecture](docs/02-architecture.md) | Topology and end-to-end flows |
 | [03-client-protocol](docs/03-client-protocol.md) | **Normative.** Frames, error codes, close codes |
-| [04-integration](docs/04-integration.md) | **Normative.** Webhook, Redis envelope, control channel, admin API |
+| [04-integration](docs/04-integration.md) | **Normative.** Webhook, Redis envelope, control channel, health checks |
 | [05-authorization](docs/05-authorization.md) | Grants, Origin, expiry, revocation, threat model |
 | [06-channels](docs/06-channels.md) | Naming and namespace configuration |
 | [07-delivery](docs/07-delivery.md) | Delivery semantics and backpressure |
 | [08-config](docs/08-config.md) | **Normative.** Every key, default and validation rule |
 | [09-internals](docs/09-internals.md) | Package layout and concurrency model |
-| [10-operations](docs/10-operations.md) | Deployment, metrics, runbook |
+| [10-operations](docs/10-operations.md) | Deployment, observability, runbook |
 | [11-testing](docs/11-testing.md) | Required coverage per milestone |
 | [12-roadmap](docs/12-roadmap.md) | Milestones and open decisions |
 | [13-review-findings](docs/13-review-findings.md) | Adversarial review of the spec and what changed |

@@ -26,7 +26,7 @@ Four documents are **normative**. An implementation that disagrees with them is 
 and a change to behaviour they describe must change them in the same commit:
 
 - [03-client-protocol.md](03-client-protocol.md) — the websocket wire protocol
-- [04-integration.md](04-integration.md) — webhook, Redis contract, control channel, admin API
+- [04-integration.md](04-integration.md) — webhook, Redis contract, control channel
 - [08-config.md](08-config.md) — configuration keys, defaults, validation
 - [14-coding-standards.md](14-coding-standards.md) — how the code is written and what CI enforces
 
@@ -51,13 +51,13 @@ Markdown.
 | 01 | [requirements](01-requirements.md) | normative-ish | FR/NFR with acceptance criteria |
 | 02 | [architecture](02-architecture.md) | explanatory | Topology, components, flows |
 | 03 | [client-protocol](03-client-protocol.md) | **normative** | Websocket frames, codes, lifecycle |
-| 04 | [integration](04-integration.md) | **normative** | Connect webhook, Redis publish, control, admin API |
+| 04 | [integration](04-integration.md) | **normative** | Connect webhook, Redis publish, control |
 | 05 | [authorization](05-authorization.md) | explanatory | Grants, Origin, expiry, revocation, threat model |
 | 06 | [channels](06-channels.md) | explanatory | Naming rules and namespace config |
 | 07 | [delivery](07-delivery.md) | explanatory | At-most-once, backpressure, reconciliation |
 | 08 | [config](08-config.md) | **normative** | Every key, default, and validation rule |
 | 09 | [internals](09-internals.md) | explanatory | Package layout, concurrency, data structures |
-| 10 | [operations](10-operations.md) | explanatory | Deploy, metrics, health, runbook |
+| 10 | [operations](10-operations.md) | explanatory | Deploy, observability, logs, runbook, capacity |
 | 11 | [testing](11-testing.md) | normative-ish | Required test coverage per milestone |
 | 12 | [roadmap](12-roadmap.md) | explanatory | Milestones, scope ladder, open decisions |
 | 13 | [review-findings](13-review-findings.md) | explanatory | Adversarial review of M0 and what changed because of it |
@@ -74,7 +74,7 @@ Markdown.
 |---|---|
 | M0 — specification | reviewed 2026-08-31; 44 findings, see [13](13-review-findings.md) |
 | M1 — connect, subscribe, publish, fan-out | not started |
-| M2 — expiry, revocation, drain, metrics | not started |
+| M2 — expiry, revocation, drain | not started |
 | M3 — client library | not started |
 | M4 — client events, presence, history | not started, may not happen |
 

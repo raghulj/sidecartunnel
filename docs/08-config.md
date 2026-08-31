@@ -38,7 +38,7 @@ That is now impossible: an empty `namespaces` gets a built-in `default` block.
 
 ### Subcommands
 
-`sidecartunnel healthcheck` performs a loopback `GET /health` against `admin.listen` and
+`sidecartunnel healthcheck` performs a loopback `GET /health` against `server.listen` and
 exits 0 or 1. It exists so a distroless image with no shell and no curl can still declare a
 container healthcheck. It checks liveness only, never the bus — see `04-integration.md` §4
 on why a bus-dependent healthcheck kills the fleet during a Redis restart.
@@ -92,7 +92,7 @@ rule, per-app namespaces, per-app limits, and a per-app cache key.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `name` | string | `app` | Used in metric labels and logs. |
+| `name` | string | `app` | Used in logs. |
 | `connect_url` | string | — | **Required.** Absolute http/https URL. |
 | `webhook_secrets` | []string | — | **Required**, min 32 bytes each. Signs with the first; a list exists so a secret can be rotated without simultaneous restarts. |
 | `connect_timeout` | duration | `10s` | Whole authorization budget: queue wait plus the call. Exceeding it closes 3008, retryable. |
@@ -182,13 +182,6 @@ claims presence is on, while presence does nothing, is a lie an operator will ac
 | `secret` | string | — | **Required.** Min 32 bytes. Signs control messages (FR-23). |
 | `refresh_spread` | duration | `60s` | Window over which a mass `refresh` is spread |
 
-### `admin`
-
-| Key | Type | Default | Rule |
-|---|---|---|---|
-| `listen` | string | `127.0.0.1:9001` | Loopback by default; must differ from `server.listen` |
-| `token` | string | `""` | When empty, authenticated routes return 404 |
-
 ### `log`
 
 | Key | Type | Default | Rule |
@@ -232,10 +225,6 @@ namespaces:
 limits:
   max_connections: 25000
   outbound_queue: 256
-
-admin:
-  listen: ":9001"
-  token: "${ST_ADMIN_TOKEN}"
 ```
 
 Equivalent minimum by environment alone:

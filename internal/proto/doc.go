@@ -10,7 +10,7 @@
 //   - Decide anything. A frame that decodes cleanly is not an authorized frame. Deciding
 //     which command a connection may issue belongs to internal/conn; deciding which
 //     channel it may reach belongs to internal/glob and the grant set.
-//   - Perform I/O. No sockets, no logging, no metrics. Callers own all three.
+//   - Perform I/O. No sockets and no logging. Callers own both.
 //   - Grow a code that docs/03-client-protocol.md does not list. Protocol changes are
 //     documentation changes first (docs/AGENTS.md §4); a code that exists here and not
 //     there is a bug, in this file.

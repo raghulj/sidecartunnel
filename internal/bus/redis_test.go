@@ -524,7 +524,7 @@ func TestRedisDisconnectedForUsesTheClock(t *testing.T) {
 
 // TestRedisSyncSubscribeFailureIsReportedAndRetried is M5: a Sync that fails must say so.
 // The earlier design's Subscribe returned an error nobody consumed, and one transient
-// failure left a channel locally subscribed and upstream dead forever, with no metric.
+// failure left a channel locally subscribed and upstream dead forever, and silently.
 func TestRedisSyncSubscribeFailureIsReportedAndRetried(t *testing.T) {
 	tr := newFakeTransport(true)
 	b := fakeBus(t, tr, RedisOptions{})
@@ -882,7 +882,7 @@ func TestRedisDefaults(t *testing.T) {
 // zero while the connection is gone.
 //
 // It used to keep reporting the pre-outage count until a new connection was adopted, so
-// st_bus_subscriptions_current looked healthy during exactly the incident an operator
+// the subscription count looked healthy during exactly the incident an operator
 // watches it in. It also broke callers: an integration test that waited on the count
 // alone was satisfied by the stale value and published into a gateway that had not
 // resubscribed, which presented as a flake rather than as this bug.

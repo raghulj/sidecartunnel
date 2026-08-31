@@ -25,7 +25,7 @@ type Message struct {
 //     pushing an unsubscribe for a slow-consumer close, and all delivery on the replica
 //     stopped while every socket stayed open and /ready stayed 200.
 //   - Subscribe returned an error nobody consumed, so one transient failure left a
-//     channel locally subscribed and upstream dead, permanently, with no metric.
+//     channel locally subscribed and upstream dead, permanently, and silently.
 //   - On reconnect the resubscribe sweep raced the live command stream in both
 //     directions: a channel could end up subscribed with no local holders, or held with
 //     no subscription.
@@ -50,8 +50,8 @@ type Bus interface {
 	// An error leaves the previous subscription set in place and is retried by the
 	// caller's reconciler with backoff. Implementations must not swallow one: a Sync that
 	// fails silently is a channel that is locally held and upstream dead, which is
-	// invisible until someone asks why a channel is quiet. Failures are counted in
-	// st_bus_sync_failures_total.
+	// invisible until someone asks why a channel is quiet. Every failure is logged by
+	// the reconciler, which is where an operator finds it (docs/10-operations.md §7).
 	Sync(ctx context.Context, desired []string) error
 
 	// Publish sends payload on channel. channel is a full bus key.
@@ -72,7 +72,7 @@ type Bus interface {
 	// single goroutine that decodes and fans out to 10,000 connections between socket
 	// reads will fall behind during a broadcast burst, get dropped, reconnect,
 	// resubscribe and be immediately behind again. That oscillation is stable, not
-	// transient, and it presents to an operator as st_bus_reconnects_total climbing
+	// transient, and it presents to an operator as /ready's bus_reconnects climbing
 	// against a perfectly healthy Redis (docs/13-review-findings.md M8).
 	Receive() <-chan Message
 

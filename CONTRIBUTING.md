@@ -178,9 +178,9 @@ Two things to know before proposing:
   comment would need to change when a second, unrelated application adopts this, it is
   wrong.
 
-Adding a dependency needs a reason written into the commit message. The budget is four —
-`gorilla/websocket`, a Redis client, a YAML parser, and the Prometheus client — and a fifth
-is a decision, not a detail.
+Adding a dependency needs a reason written into the commit message. The budget is three —
+`gorilla/websocket`, a Redis client, and a YAML parser — and a fourth is a decision, not a
+detail.
 
 ## Licence
 

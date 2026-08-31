@@ -275,8 +275,10 @@ def publish(channel: str, event: str, data, exclude: str | None = None,
 
     Publishing gives no error channel. Redis PUBLISH returns a subscriber count that
     reflects gateway replicas, not end clients, so a typo'd channel name is silent
-    forever. GET /channels on the admin API is how to find out whether anyone is
-    listening (docs/04-integration.md §2.2).
+    forever. The gateway logs `subscribe`/`unsubscribe` at INFO with the client id and
+    the channel, so whether anyone is listening is a grep of that log, not an API call:
+
+        docker compose logs sidecartunnel | grep '"msg":"subscribe"' | grep room-4410
 
     A Redis failure is swallowed. The write it accompanies is already committed, so
     failing the request would report an error for something that succeeded, and the
@@ -299,9 +301,8 @@ def control_disconnect(user: str, reason: str) -> None:
     """Close every connection for one user, on every replica, within a second.
 
     docs/04-integration.md §3. Control messages are signed with control.secret and
-    carry a timestamp; unsigned or stale ones are dropped and counted in
-    st_control_rejected_total. The target is matched exactly, never as a glob, and
-    exactly one of user or client must be named.
+    carry a timestamp; unsigned or stale ones are dropped. The target is matched
+    exactly, never as a glob, and exactly one of user or client must be named.
 
     OPEN POINT — confirm against the gateway before relying on this.
 
@@ -316,8 +317,9 @@ def control_disconnect(user: str, reason: str) -> None:
         is one defensible reading of the spec, not a settled one. The gateway is
         unimplemented (M2), so nothing verifies it yet.
 
-        The alternative with no ambiguity at all is POST /disconnect on the admin API,
-        which is authenticated with a bearer token and returns a result.
+        There is no fallback with less ambiguity: POST /disconnect on the admin API
+        covered the same action over a bearer-token call, but the admin API is gone,
+        so this control message is the only door onto revocation now.
     """
     action = {"action": "disconnect", "user": user, "reason": reason}
     body = json.dumps(action, sort_keys=True, separators=(",", ":"))

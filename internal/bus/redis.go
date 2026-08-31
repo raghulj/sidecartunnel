@@ -344,7 +344,7 @@ func (b *RedisBus) Close() error {
 	return b.closeErr
 }
 
-// Health reports the transport's state for /ready and for metrics. It takes no lock and
+// Health reports the transport's state for /ready and for tests. It takes no lock and
 // never blocks, so a readiness probe cannot queue behind a large resubscribe.
 func (b *RedisBus) Health() Health {
 	h := Health{
@@ -403,7 +403,7 @@ func (b *RedisBus) supervise() {
 			// There is nothing to report the error to — Sync's caller is the reconciler
 			// and it is not here — so the response is to drop the connection and try
 			// again from a known state. The failure is visible as Health.Reconnects
-			// climbing, which is st_bus_reconnects_total.
+			// climbing, which /ready reports as bus_reconnects.
 			b.dropConnection()
 		}
 
@@ -485,11 +485,11 @@ func (b *RedisBus) release(sub subscriber) {
 
 	if b.connected.CompareAndSwap(true, false) {
 		b.downSince.Store(b.clock().UnixNano())
-		// Nothing is subscribed upstream once the connection is gone, so the gauge must
+		// Nothing is subscribed upstream once the connection is gone, so the count must
 		// say zero. It used to keep reporting the pre-outage count until a new connection
-		// was adopted, which made st_bus_subscriptions_current read healthy during
-		// exactly the incident it is watched in - and made any test that waited on the
-		// count alone proceed against a gateway that had not resubscribed yet.
+		// was adopted, which made Health read healthy during exactly the incident it is
+		// consulted in - and made any test that waited on the count alone proceed against
+		// a gateway that had not resubscribed yet.
 		b.subs.Store(0)
 	}
 	_ = sub.Close()

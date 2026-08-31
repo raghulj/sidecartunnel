@@ -305,9 +305,9 @@ future feature is granted to everyone by default.
 
 ### 4.3 Cardinality
 
-Channel names appear in logs, metrics labels and the admin API. Namespaces are labelled in
-Prometheus; individual channels are not, except in the admin API. A per-user namespace at
-200,000 users is fine for the gateway and fine for Prometheus for that reason.
+Channel names appear only in logs. Nothing aggregates by namespace — the log lines operate
+on individual channels — so a per-user namespace at 200,000 users costs the gateway nothing
+beyond the connection state it already holds.
 
 Nothing secret belongs in a name. Names are not a security control; grants are. An encoded
 or hashed name buys nothing and costs the ability to read a log during an incident.
@@ -399,10 +399,10 @@ defaulting to `st:`.
 | `data` | yes | Opaque payload. Any JSON value. |
 | `exclude` | no | Client id that must not receive this. |
 | `from` | no | Set by the gateway on client events. Never set by an application. |
-| `id` | no | Echoed in logs and metrics exemplars for tracing. |
+| `id` | no | Echoed in logs for tracing. |
 
-An envelope that is not valid JSON, or is missing `event` or `data`, is dropped and counted
-in `st_messages_dropped_total{reason="malformed"}`. The publisher is not told.
+An envelope that is not valid JSON, or is missing `event` or `data`, is dropped. The
+gateway logs the drop with the channel name; the publisher is not told.
 
 ```python
 import json, redis
@@ -471,13 +471,18 @@ A typo'd channel name is silent forever. Redis `PUBLISH` returns a subscriber co
 reflects gateway replicas, not end clients, so it distinguishes "definitely nobody" from
 "maybe someone" and nothing more.
 
-This is the cost of choosing Redis over an HTTP publish API, and it is why `/channels`
-exists on the admin API. During development it is the way to find out whether anyone is
-listening to what the application thinks it is publishing to.
+This is the cost of choosing Redis over an HTTP publish API. There is no introspection
+route. The gateway's own log is the whole of its introspection: subscribe and unsubscribe
+are logged at INFO with `client` and `channel`, including the subscriptions that arrive on
+the connect frame, so "I published and nobody received anything" is answered by grepping
+what the gateway already wrote:
 
 ```sh
-curl -H "Authorization: Bearer $ST_ADMIN_TOKEN" localhost:9001/channels?prefix=room-
+grep '"msg":"subscribe"' gateway.log | grep room-4410
 ```
+
+Nothing there is almost always the prefix or the separator (§4.1), not a delivery failure —
+that is reconciliation's job (§7).
 
 Build the channel name in exactly one function. A format string repeated at eleven publish
 sites will be wrong at one of them.
@@ -504,8 +509,8 @@ on reconnect:
 This is the single most important thing an integrating application implements, and the
 easiest to skip, because **everything appears to work without it until the first deploy**.
 A rolling restart of two replicas drops every connection twice. Without `?since=` every
-connected user silently loses whatever was published during their reconnect, and nothing
-in any dashboard shows it.
+connected user silently loses whatever was published during their reconnect, and there is
+nothing to alert on: the loss happens on the client, and nothing server-side failed.
 
 ### 7.2 The Endpoint
 
@@ -564,7 +569,7 @@ subscribe to it — any channel beginning `_` is refused with error 103 before g
 consulted.
 
 Control messages are **signed** with `control.secret` and carry a timestamp. Unsigned or
-stale messages are dropped and counted in `st_control_rejected_total`.
+stale messages are dropped and logged; there is no other record of the rejection.
 
 ```json
 {"ts": 1756612800, "nonce": "01J8…", "sig": "<HMAC-SHA256(control_secret, ts.nonce.body)>",
@@ -602,13 +607,15 @@ modelled in `10-operations.md` §4.
 `control.refresh_spread`, and it should still be issued per user rather than in a loop over
 every user of a tenant.
 
-### 8.3 The Admin API Alternative
+### 8.3 There Is No Second Door
 
-`POST /disconnect` on `admin.listen` does the same thing over HTTP, with a bearer token and
-a result. It is the operator's tool; the control channel is the application's, because it
-needs no credential and no service discovery. Both exist.
-
-The admin listener defaults to `127.0.0.1:9001` and must never be published.
+There used to be a `POST /disconnect` on a separate admin listener, doing the same thing
+over HTTP with a bearer token. It is gone. The control channel above (§8.1) is now the only
+way to revoke a connection, application or operator alike — a second door onto the same
+action was a second thing to keep signed and current for no capability the first did not
+already have. An operator with Redis access publishes the same `disconnect` message §8.1
+shows; there is no result returned, and the confirmation is the same one the application
+gets — the connection closes with **3501**, logged.
 
 ## 9. Frontend Wiring
 
@@ -773,8 +780,8 @@ What changes:
   This is the change that surfaces §5.2: an application relying on per-subscribe signing
   for an unbounded channel set has no direct equivalent yet.
 - Publishing becomes fire-and-forget with no error channel (§6.5). Any code that inspected
-  a publish result, retried a failed publish, or alerted on publish errors loses its
-  signal. Alert on `st_messages_published_total` flattening instead.
+  a publish result, retried a failed publish, or alerted on publish errors loses its signal
+  outright, with no automatic replacement — see §6.5.
 - History and presence must be removed from the frontend or replaced. History becomes
   `?since=`. Presence has no replacement today.
 - The `private-` / `presence-` prefixes carry no meaning. Redesign the names against §4
@@ -825,7 +832,7 @@ page at once, because the merge is already idempotent on the payload id (§7.3).
 | Phase | Duration | State |
 |---|---|---|
 | 1. Dual publish | 1 week | Every publish site sends to both the old system and Redis. Nothing consumes Redis. |
-| 2. Shadow connect | 1 week | Gateway deployed. Frontend opens the websocket but ignores every push. Watch `st_webhook_duration_seconds`, `st_connections_current`, `st_subscribe_denied_total`. |
+| 2. Shadow connect | 1 week | Gateway deployed. Frontend opens the websocket but ignores every push. Watch the webhook's own request logs for latency and error rate, `GET /ready` for bus health, and the gateway's logs for subscribe denials. |
 | 3. Cohort cutover | 1–2 weeks | A percentage of sessions render from the gateway and stop rendering from the old system. Both connections stay open. |
 | 4. Full cutover | — | All sessions on the gateway. The old client is dead code. |
 | 5. Removal | — | Remove the old publish call and the old dependency. |
@@ -833,11 +840,12 @@ page at once, because the merge is already idempotent on the payload id (§7.3).
 What each phase proves:
 
 - **Phase 1** proves the envelope and the channel names. Redis with no gateway is a null
-  sink, so mistakes cost nothing. Verify names with `/channels` in phase 2, not here.
+  sink, so mistakes cost nothing. Verify names against the gateway's subscribe log in phase
+  2, not here.
 - **Phase 2** proves the webhook under real load, including reconnect behaviour on a
-  deploy. This is where a collapsed 401/5xx (§3) shows up, and where it is cheap.
-  `st_subscribe_denied_total` above zero is a grant bug, and finding it here is the point of
-  the phase.
+  deploy. This is where a collapsed 401/5xx (§3) shows up, and where it is cheap. A
+  subscribe-denied line in the gateway's logs is a grant bug, and finding it here is the
+  point of the phase.
 - **Phase 3** proves reconciliation. Any user reporting a missing message in this phase has
   found a gap in `?since=`, not in the gateway.
 - Roll back by reverting the frontend cohort. The application-side changes — the webhook,
@@ -896,10 +904,6 @@ full table with thresholds.
 - [ ] Both are supplied by `_FILE` or a secret manager, and **rotation is rehearsed**:
       append the new secret to the gateway's list, deploy the application accepting both,
       make the new one first, remove the old one.
-- [ ] `admin.listen` is loopback or an internal address, and the admin port is **not
-      published** by the container runtime.
-- [ ] `admin.token` is set. When unset, the authenticated routes return 404 rather than
-      being open — verify which of those two states the deployment is in.
 - [ ] TLS terminates in front of the gateway. `wss://`, never `ws://`, outside localhost.
 - [ ] No log line, at any level, contains a cookie, an `Authorization` header, a webhook
       body or a message payload.
@@ -909,7 +913,7 @@ full table with thresholds.
 
 | Check | How | Expected |
 |---|---|---|
-| Origin enforcement | Open a socket from a foreign origin | HTTP **403**, `st_origin_rejected_total` increments, no webhook call |
+| Origin enforcement | Open a socket from a foreign origin | HTTP **403**, logged as a rejected origin, no webhook call |
 | Grant enforcement | Subscribe to another tenant's channel | Error **103** |
 | Revocation | Suspend an account | Every connection closes with **3501** in under **1 second** |
 | Reconnect storm | Kill a replica in staging at realistic connection counts | Application request queue stays flat; reconnects spread over `server.drain_spread` |

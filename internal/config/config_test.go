@@ -145,9 +145,6 @@ func TestLoad_Defaults(t *testing.T) {
 
 		{"control.refresh_spread", cfg.Control.RefreshSpread.Duration(), 60 * time.Second},
 
-		{"admin.listen", cfg.Admin.Listen, "127.0.0.1:9001"},
-		{"admin.token", cfg.Admin.Token, ""},
-
 		{"log.level", cfg.Log.Level, "info"},
 		{"log.format", cfg.Log.Format, "json"},
 	}
@@ -646,10 +643,6 @@ namespaces:
 limits:
   max_connections: 25000
   outbound_queue: 256
-
-admin:
-  listen: ":9001"
-  token: "${ST_ADMIN_TOKEN}"
 `
 
 // TestLoad_GoldenExample loads the worked example from docs/08-config.md §4 as written.
@@ -692,8 +685,6 @@ func TestLoad_GoldenExample(t *testing.T) {
 			{"namespaces[0].rate_limit", cfg.Namespaces[0].RateLimit, "10/s"},
 			{"limits.max_connections", cfg.Limits.MaxConnections, 25000},
 			{"limits.outbound_queue", cfg.Limits.OutboundQueue, 256},
-			{"admin.listen", cfg.Admin.Listen, ":9001"},
-			{"admin.token", cfg.Admin.Token, "${ST_ADMIN_TOKEN}"},
 			{"log.level", cfg.Log.Level, "info"},
 		}
 		for _, c := range checks {

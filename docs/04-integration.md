@@ -1,8 +1,9 @@
 # 04 — Integration
 
 **Normative.** Everything an application must implement to adopt sidecartunnel, and
-everything the gateway promises in return. Three surfaces: one HTTP endpoint the
-application exposes, one Redis contract it publishes on, and an admin API for operators.
+everything the gateway promises in return. Two surfaces on the application side — one
+HTTP endpoint it exposes, one Redis contract it publishes on — plus the HTTP surface the
+gateway itself exposes to infrastructure (§4).
 
 Total work on the application side is one view function and one line at each publish site.
 
@@ -211,7 +212,7 @@ so there is exactly one prefix, configured as `bus.prefix`.
 | `data` | yes | Opaque payload. Any JSON value. |
 | `exclude` | no | Client id that must not receive this. |
 | `from` | no | Set by the gateway on client events; never set by an application. |
-| `id` | no | Echoed in logs and metrics exemplars for tracing. |
+| `id` | no | Echoed in logs for tracing. |
 
 There was an `only_users` field. It is gone: it was a delivery-time authorization filter in
 a design that states delivery-time authorization does not exist, it had no bound, and
@@ -225,14 +226,16 @@ request. Each tab has its own client id, which is the point — the other tabs s
 the event.
 
 An envelope that is not valid JSON, or is missing `event` or `data`, is dropped and
-counted in `st_messages_dropped_total{reason="malformed"}`.
+logged once with reason `malformed`.
 
 **Publishing gives you no error channel.** A typo'd channel name is silent forever: Redis
 `PUBLISH` returns a subscriber count that reflects gateway replicas, not end clients, so
 it distinguishes "definitely nobody" from "maybe someone" and nothing more. This is the
-real cost of choosing Redis over an HTTP publish API, and it is why `/channels` exists on
-the admin surface — during development it is the way to find out whether anyone is
-listening to what you think they are.
+real cost of choosing Redis over an HTTP publish API. During development, the way to find
+out whether anyone is listening to what you think they are is a grep of the gateway's own
+log — subscribe and unsubscribe are logged at INFO with `client` and `channel`:
+
+    grep '"msg":"subscribe"' gateway.log | grep room-4410
 
 ### 2.3 Publishing (Python)
 
@@ -313,25 +316,37 @@ claiming a channel it will never hear from again, indistinguishable from a quiet
 forever.
 
 Revocation on the bus rather than over HTTP keeps it a one-line call for the application
-and reaches every replica without service discovery.
+and reaches every replica without service discovery. It is also the only revocation
+route there is: an HTTP `POST /disconnect` duplicated exactly this action and has been
+removed for that reason.
 
-## 4. Admin API
+## 4. HTTP surface
 
-A **separate listener** on `admin.listen` (default `:9001`), never exposed publicly. This
-covers what a `PUBLISH` cannot express.
+Everything the gateway answers over HTTP, all on one listener, `server.listen`. There is
+no second listener and no credential on any route.
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/health` | none | Liveness. 200 while the process runs. **Never consults the bus.** |
-| GET | `/ready` | none | Readiness. 503 once the bus has been down longer than `bus.ready_grace`. |
-| GET | `/metrics` | none | Prometheus exposition. |
-| GET | `/channels?prefix=` | bearer | Occupied channels and local subscriber counts. |
-| GET | `/channels/{channel}` | bearer | Subscriber count and user ids for one channel. |
-| POST | `/disconnect` | bearer | `{"user":"u-7"}` or `{"client":"…"}`. Same effect as the control action. |
+| Route | Auth | Answers |
+|---|---|---|
+| `<server.path>` (default `/ws`) | Origin allowlist + connect webhook | The websocket |
+| `GET /health` | none | 200 while the process runs. **Never consults the bus.** |
+| `GET /ready` | none | 503 once draining, or once the bus has been down longer than `bus.ready_grace`. |
 
-Bearer token is `admin.token`, compared with `crypto/subtle.ConstantTimeCompare`. When
-unset, the authenticated routes MUST return 404 rather than being open — an accidentally
-unconfigured admin API should look absent, not permissive.
+Everything else is 404.
+
+`/ready`'s body, verbatim:
+
+    {"ready":true,"bus_connected":true,"bus_down_for_seconds":0,"bus_reconnects":0,"draining":false}
+
+`bus_reconnects` is cumulative for the life of the process — read it by curling twice and
+comparing. A count that climbs while `bus_connected` stays `true` is Redis pub/sub
+output-buffer eviction, not an unstable Redis; it is the only remaining way to observe
+that condition.
+
+Neither probe carries a credential. They disclose that the process is up and that it can
+reach Redis, which is what a load balancer needs and what every health endpoint on the
+internet already says. In the documented deployment (`10-operations.md` §2) the proxy
+forwards only `server.path`, so neither is publicly reachable anyway — that is defence in
+depth, not the reason they are safe to leave unauthenticated.
 
 **Never wire `/ready` to a liveness probe.** A Redis restart makes every replica
 unready at once; on a liveness probe that kills every replica simultaneously, drops every
@@ -339,9 +354,6 @@ connection, and converts an eight-second Redis blip into a full application outa
 50,000 clients re-authorize together. `/health` exists precisely so there is something
 correct to point a liveness probe at. `bus.ready_grace` (default 30s) covers the same case
 for readiness, so a short blip does not pull the whole fleet from the load balancer.
-
-`/channels` reports **this replica's** view. Cluster-wide counts would need a scatter-gather
-across replicas, which is not built (see `12-roadmap.md`).
 
 ## 5. Integration checklist
 

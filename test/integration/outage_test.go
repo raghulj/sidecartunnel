@@ -106,7 +106,7 @@ func TestBusLossKeepsConnectionsOpenAndRestoresDelivery(t *testing.T) {
 		waitUpstream(t, r, 2)
 		waitFor(t, "/ready to recover", func() bool { return r.ready() == http.StatusOK })
 		if got := r.reconnects(); got < 1 {
-			t.Fatalf("replica %d: st_bus_reconnects_total = %d after a bus outage, want at least 1", i, got)
+			t.Fatalf("replica %d: reconnects = %d after a bus outage, want at least 1", i, got)
 		}
 	}
 
@@ -126,7 +126,7 @@ func TestBusLossKeepsConnectionsOpenAndRestoresDelivery(t *testing.T) {
 // wants — no more and no less.
 //
 // This is the test the old design could not pass. Modelling subscriptions as *events* on
-// a queue meant a failed subscribe was lost with no metric (M5), a reconnect swept the hub
+// a queue meant a failed subscribe was lost with nothing recording it (M5), a reconnect swept the hub
 // while commands were still flowing so a subscribe and an unsubscribe for one channel
 // could land in either order (M6), and a full queue blocked the fan-out goroutine and
 // stopped all delivery on the replica while every socket stayed open and /ready stayed

@@ -53,8 +53,8 @@ const (
 // that falls behind. A gateway whose reader goroutine decoded and fanned out to thousands
 // of connections between socket reads falls behind during a broadcast, is dropped,
 // reconnects, resubscribes and is immediately behind again. It presents to an operator as
-// st_bus_reconnects_total climbing against a perfectly healthy Redis, which points
-// on-call at the wrong system entirely.
+// /ready's bus_reconnects climbing against a perfectly healthy Redis, which points on-call
+// at the wrong system entirely.
 //
 // The design answer is that the reader does nothing but drain the socket into a bounded
 // intake, with decode and fan-out on workers behind it, and that a full intake drops
@@ -63,7 +63,7 @@ const (
 //
 // Both halves of the requirement are asserted, and which one applies is decided by what
 // happened rather than by hope. If the gateway was not evicted — the outcome a correctly
-// configured Redis must produce — st_bus_reconnects_total is unchanged. If it was, the
+// configured Redis must produce — the reconnect count is unchanged. If it was, the
 // test insists on full recovery: the subscription set is restored and delivery resumes to
 // every client. Either way no client connection may be lost, because a burst on one
 // channel must never cost a subscriber its session.

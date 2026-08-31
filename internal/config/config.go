@@ -42,9 +42,6 @@ type Config struct {
 	// Control is the signed control channel.
 	Control Control `yaml:"control"`
 
-	// Admin is the separate operator listener.
-	Admin Admin `yaml:"admin"`
-
 	// Log is logging output.
 	Log Log `yaml:"log"`
 }
@@ -130,7 +127,7 @@ type Server struct {
 
 // App configures the single consuming application and its connect webhook.
 type App struct {
-	// Name is used in metric labels and log lines. Default "app".
+	// Name is used in log lines. Default "app".
 	Name string `yaml:"name"`
 
 	// ConnectURL is the connect webhook. Required; must be an absolute http or https URL.
@@ -236,8 +233,8 @@ type Bus struct {
 	ReconnectMax Duration `yaml:"reconnect_max"`
 
 	// IntakeQueue is the depth between the bus reader goroutine and the dispatch workers.
-	// Default 4096. Watch st_bus_intake_depth; sustained non-zero means the workers are
-	// behind the reader.
+	// Default 4096. A full intake drops rather than blocks, and every drop is logged;
+	// a run of those lines means the workers are behind the reader.
 	IntakeQueue int `yaml:"intake_queue"`
 
 	// DispatchWorkers is the number of fan-out workers. Default 2, range 1–64.
@@ -371,8 +368,8 @@ type Limits struct {
 	OutboundQueue int `yaml:"outbound_queue"`
 
 	// MaxMessageSize caps a published envelope in bytes. Default 32768, range 1–1 MiB.
-	// An oversize envelope is dropped, logged once with the channel name, and counted in
-	// st_messages_dropped_total{reason="oversize"} (FR-14).
+	// An oversize envelope is dropped and logged once with the channel name, never with
+	// the payload (FR-14).
 	MaxMessageSize int `yaml:"max_message_size"`
 
 	// MaxFrameSize caps an inbound client frame in bytes. Default 16384, range 1–1 MiB.
@@ -401,27 +398,6 @@ type Control struct {
 	// docs/13-review-findings.md C8 says 30s; docs/08-config.md §3 says 60s and is
 	// normative, so 60s.
 	RefreshSpread Duration `yaml:"refresh_spread"`
-}
-
-// Admin configures the operator listener. It is a separate listener from Server.Listen
-// and is never exposed publicly.
-type Admin struct {
-	// Listen is the admin listen address. Default "127.0.0.1:9001", and it must differ
-	// from Server.Listen.
-	//
-	// Loopback by default is deliberate, and so is the absence of EXPOSE 9001 in the
-	// image: docker run -P publishes every exposed port
-	// (docs/13-review-findings.md m14).
-	Listen string `yaml:"listen"`
-
-	// Token is the bearer token for /channels and /disconnect, compared with
-	// crypto/subtle.ConstantTimeCompare. Default empty.
-	//
-	// When empty, the authenticated routes return 404 rather than being open. An
-	// accidentally unconfigured admin API should look absent, not permissive (FR-20).
-	//
-	// Never log this value.
-	Token string `yaml:"token"`
 }
 
 // Log configures logging output.
@@ -516,9 +492,6 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateControl(&c.Control); err != nil {
-		return err
-	}
-	if err := validateListeners(c.Server.Listen, c.Admin.Listen); err != nil {
 		return err
 	}
 	return validateLog(&c.Log)

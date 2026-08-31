@@ -8,7 +8,7 @@
 // Subcommands:
 //
 //	sidecartunnel                    run the gateway
-//	sidecartunnel healthcheck        loopback GET /health against admin.listen, exit 0 or 1
+//	sidecartunnel healthcheck        loopback GET /health against server.listen, exit 0 or 1
 //
 // healthcheck exists so a distroless image with no shell and no curl can still declare a
 // container healthcheck. It checks liveness only, never the bus — a bus-dependent

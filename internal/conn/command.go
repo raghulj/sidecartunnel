@@ -157,7 +157,12 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 	// Attach queues the reply inside the same critical section that takes the
 	// subscriptions, so no push for a granted channel can overtake the connect reply that
 	// announces it (docs/13-review-findings.md M15).
+	// admitted is what Attach actually took, captured for the log below. The callback
+	// runs synchronously inside Attach's critical section, so this is written before
+	// Attach returns and read after — there is no goroutine between the two.
+	var admitted []string
 	c.registry.Attach(c, c.admissible(cmd.Connect.Subs), func(granted []string) *proto.Frame {
+		admitted = granted
 		subs := make(map[string]proto.SubDetail, len(granted))
 		for _, channel := range granted {
 			subs[channel] = proto.SubDetail{}
@@ -170,7 +175,14 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 		}})
 	})
 
-	c.log.Info("connected", "client", c.id, "user", user, "subs", len(cmd.Connect.Subs))
+	c.log.Info("connected", "client", c.id, "user", user, "subs", len(admitted))
+	// One line per channel, in the same shape doSubscribe emits, because most
+	// subscriptions arrive on the connect frame rather than as separate commands. Logging
+	// only the count here would mean the runbook's grep for a channel name found nothing
+	// on a replica that is holding it (docs/10-operations.md §7).
+	for _, channel := range admitted {
+		c.log.Info("subscribe", "client", c.id, "channel", channel)
+	}
 	if auth.ExpiresIn > 0 {
 		// FR-22. The writer owns every timer; the channel has capacity 1 and is written
 		// at most once, so this cannot block even if the writer has already gone.
@@ -219,7 +231,12 @@ func (c *Conn) doSubscribe(cmd proto.Command) bool {
 	if err := c.registry.Subscribe(c, cmd.Subscribe.Channel, ack); err != nil {
 		return c.failWith(cmd.ID, err)
 	}
-	c.log.Debug("subscribed", "client", c.id, "channel", cmd.Subscribe.Channel)
+	// Info, not debug. This line is the gateway's answer to "I published and nobody
+	// received anything": publishing goes over Redis and gives the application no error
+	// channel, so a grep for this message and the channel name is the only way to find out
+	// whether anyone was subscribed at the time (docs/10-operations.md §7). A client id and
+	// a channel name are both safe to log; a cookie and a payload are not (NFR-7).
+	c.log.Info("subscribe", "client", c.id, "channel", cmd.Subscribe.Channel)
 	return true
 }
 
@@ -239,7 +256,9 @@ func (c *Conn) doUnsubscribe(cmd proto.Command) bool {
 	if err := c.registry.Unsubscribe(c, cmd.Unsubscribe.Channel, ack); err != nil {
 		return c.failWith(cmd.ID, err)
 	}
-	c.log.Debug("unsubscribed", "client", c.id, "channel", cmd.Unsubscribe.Channel)
+	// Info for the same reason as subscribe: the pair of lines is what makes a channel's
+	// local membership recoverable from the log (docs/10-operations.md §7).
+	c.log.Info("unsubscribe", "client", c.id, "channel", cmd.Unsubscribe.Channel)
 	return true
 }
 

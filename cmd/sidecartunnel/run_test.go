@@ -120,16 +120,15 @@ func TestRun_InvalidConfigNamesTheKey_NFR5(t *testing.T) {
 			want: "control.secret",
 		},
 		{
-			name: "admin listener shares the client socket",
+			name: "server.listen has no port",
 			env: map[string]string{
 				"ST_SERVER__ALLOWED_ORIGINS": "https://app.example.com",
 				"ST_APP__CONNECT_URL":        "http://webapp:5000/_st/connect",
 				"ST_APP__WEBHOOK_SECRETS":    testWebhookSecret,
 				"ST_CONTROL__SECRET":         testControlSecret,
-				"ST_SERVER__LISTEN":          ":9001",
-				"ST_ADMIN__LISTEN":           "127.0.0.1:9001",
+				"ST_SERVER__LISTEN":          "0.0.0.0",
 			},
-			want: "admin.listen",
+			want: "server.listen",
 		},
 	}
 	for _, tt := range tests {
@@ -153,7 +152,7 @@ func TestRun_InvalidConfigNamesTheKey_NFR5(t *testing.T) {
 
 // TestRun_InvalidConfigNeverQuotesASecret is docs/14-coding-standards.md §9 applied to the
 // startup path: an error from internal/config names the key and must not quote the value
-// of app.webhook_secrets, control.secret or admin.token (NFR-7).
+// of app.webhook_secrets or control.secret (NFR-7).
 func TestRun_InvalidConfigNeverQuotesASecret(t *testing.T) {
 	env := testEnv("http://webapp:5000/_st/connect")
 	env["ST_APP__WEBHOOK_SECRETS"] = "short"
@@ -164,7 +163,7 @@ func TestRun_InvalidConfigNeverQuotesASecret(t *testing.T) {
 	if got := run(context.Background(), nil, &stdout, &stderr, signalChan(1)); got != exitFailure {
 		t.Fatalf("run() = %d, want %d", got, exitFailure)
 	}
-	for _, secret := range []string{"short", testControlSecret, "admin-token"} {
+	for _, secret := range []string{"short", testControlSecret} {
 		if strings.Contains(stderr.String(), secret) {
 			t.Fatalf("startup error quoted a secret value: %q", stderr.String())
 		}
@@ -219,7 +218,7 @@ func TestRun_StartupFailureIsReportedAndExitsOne(t *testing.T) {
 	// Hold a port, then ask the gateway for the same one.
 	held := newHeldPort(t)
 	env := testEnv(stub.URL)
-	env["ST_ADMIN__LISTEN"] = held
+	env["ST_SERVER__LISTEN"] = held
 	env["ST_LOG__FORMAT"] = "text"
 	for k, v := range env {
 		t.Setenv(k, v)
@@ -227,10 +226,10 @@ func TestRun_StartupFailureIsReportedAndExitsOne(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	if got := run(context.Background(), nil, &stdout, &stderr, signalChan(1)); got != exitFailure {
-		t.Fatalf("run() = %d with admin.listen already bound, want %d", got, exitFailure)
+		t.Fatalf("run() = %d with server.listen already bound, want %d", got, exitFailure)
 	}
-	if !strings.Contains(stderr.String(), "admin.listen") {
-		t.Fatalf("stderr = %q, want it to name admin.listen", stderr.String())
+	if !strings.Contains(stderr.String(), "server.listen") {
+		t.Fatalf("stderr = %q, want it to name server.listen", stderr.String())
 	}
 }
 
@@ -259,7 +258,7 @@ func TestRun_ServeStopsOnAContextCancellation(t *testing.T) {
 	case <-time.After(waitFor):
 		t.Fatalf("run did not return within %s", waitFor)
 	}
-	for _, secret := range []string{testWebhookSecret, testControlSecret, "admin-token"} {
+	for _, secret := range []string{testWebhookSecret, testControlSecret} {
 		if strings.Contains(stderr.String(), secret) {
 			t.Fatalf("a secret reached the log at debug level (NFR-7): %q", stderr.String())
 		}
@@ -268,22 +267,22 @@ func TestRun_ServeStopsOnAContextCancellation(t *testing.T) {
 
 // TestRun_HealthcheckSubcommand is the subcommand as a container runtime invokes it:
 // `sidecartunnel healthcheck`, configured from the environment alone, exiting 0 against a
-// live admin listener and 1 against nothing.
+// live listener and 1 against nothing.
 //
 // It is the whole point of the subcommand existing — a distroless image has no shell and
 // no curl, so the binary probes itself (docs/10-operations.md §1, §3).
 func TestRun_HealthcheckSubcommand(t *testing.T) {
-	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
 			t.Errorf("healthcheck probed %q, want /health — never /ready (FR-20)", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer admin.Close()
+	defer live.Close()
 
 	stub := newStubWebhook(t, grant{user: "u-7", expiresIn: 3600})
 	env := testEnv(stub.URL)
-	env["ST_ADMIN__LISTEN"] = strings.TrimPrefix(admin.URL, "http://")
+	env["ST_SERVER__LISTEN"] = strings.TrimPrefix(live.URL, "http://")
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
@@ -295,7 +294,7 @@ func TestRun_HealthcheckSubcommand(t *testing.T) {
 
 	// The same configuration with nothing listening is exit 1, which is what makes the
 	// container healthcheck mean anything.
-	t.Setenv("ST_ADMIN__LISTEN", newClosedPort(t))
+	t.Setenv("ST_SERVER__LISTEN", newClosedPort(t))
 	stderr.Reset()
 	if got := run(context.Background(), []string{"healthcheck"}, &stdout, &stderr, signalChan(1)); got != exitFailure {
 		t.Fatalf("healthcheck against nothing = %d, want %d", got, exitFailure)

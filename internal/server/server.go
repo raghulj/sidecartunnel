@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
 	"github.com/raghulj/sidecartunnel/internal/conn"
 	"github.com/raghulj/sidecartunnel/internal/hub"
@@ -27,11 +28,43 @@ const (
 	defaultReadHeaderTimeout = 5 * time.Second
 	defaultDrainTimeout      = 20 * time.Second
 	defaultDrainSpread       = 60 * time.Second
+	defaultReadyGrace        = 30 * time.Second
+)
+
+// The probe routes, on the same listener as the websocket endpoint.
+//
+// They used to live on a second listener bound to loopback, so that a proxy
+// misconfiguration could not expose the operator API to the internet. That listener is
+// gone along with the operator API it protected (docs/12-roadmap.md §2): these two routes
+// leak "this process is up" and "this process can reach Redis", which is what a load
+// balancer needs and what every health endpoint on the internet already says. In the
+// documented deployment the proxy forwards only server.path, so neither is publicly
+// reachable anyway (docs/10-operations.md §2) — but that is defence in depth and not the
+// reason these are safe.
+const (
+	healthPath = "/health"
+	readyPath  = "/ready"
 )
 
 // drainReason is the close reason on a graceful shutdown. It names the condition and
 // nothing else: a reason must never carry a cookie, a header value or a payload (NFR-7).
 const drainReason = "draining"
+
+// BusHealth is the Server's entire view of the bus, and GET /ready is the only thing that
+// consults it.
+//
+// GET /health must never call it. The distinction is load-bearing: a Redis restart makes
+// every replica unready at once, so /ready wired to a liveness probe kills every replica
+// simultaneously, drops every connection, and converts an eight-second blip into a full
+// application outage as the whole fleet re-authorizes together
+// (docs/13-review-findings.md M20). The interface is this narrow so that reading the two
+// handlers makes it obvious which one is which.
+//
+// bus.HealthReporter satisfies it, so both bus implementations do.
+type BusHealth interface {
+	// Health returns a snapshot of the transport. It never blocks.
+	Health() bus.Health
+}
 
 // Connector is the connect webhook as this package uses it. *webhook.Client implements
 // it, and New builds one when the caller supplies none.
@@ -62,6 +95,12 @@ type Options struct {
 	// Hub is the channel registry every connection on this replica shares. Required.
 	Hub *hub.Hub
 
+	// Bus is what GET /ready reports on, and nothing else reads it. Required: a gateway
+	// that cannot answer readiness is a gateway a load balancer cannot manage, and
+	// discovering that at the first probe rather than at startup is the failure NFR-5 is
+	// about.
+	Bus BusHealth
+
 	// Webhook is the connect client. Nil builds one from Config, which is what puts
 	// server.trusted_proxies in the hands of the package that owns the X-Forwarded-For
 	// walk (FR-24).
@@ -84,14 +123,14 @@ type Options struct {
 	ClientID func() string
 }
 
-// Stats are a Server's cumulative counters, for metrics and for tests.
+// Stats are a Server's cumulative counters, read by the drain log and by tests.
 //
 // OriginRejected is kept apart from OverCapacity because they are different incidents: a
 // rejected Origin is somebody trying to hijack a session, and a 503 is this replica being
 // full (FR-2, NFR-1).
 type Stats struct {
 	// OriginRejected counts handshakes refused by the allowlist, before any application
-	// call. It is st_origin_rejected_total.
+	// call. Each one is logged at warn with the offending Origin.
 	OriginRejected uint64
 
 	// OverCapacity counts handshakes refused with 503, by limits.max_connections or
@@ -136,6 +175,7 @@ type counters struct {
 type Server struct {
 	cfg     *config.Config
 	hub     *hub.Hub
+	bus     BusHealth
 	webhook Connector
 	clock   conn.Clock
 	log     *slog.Logger
@@ -178,10 +218,23 @@ type Server struct {
 
 	// current is the admitted-connection count, reserved before the upgrade so that two
 	// simultaneous handshakes cannot both pass limits.max_connections.
-	current  int
+	current int
+
+	// draining is set by StopAccepting and by Drain. It refuses new upgrades with 503 and
+	// makes GET /ready answer 503.
 	draining bool
-	http     *http.Server
-	bound    atomic.Bool
+
+	// stopped is set by Drain alone, and is what Serve refuses to start on.
+	//
+	// It is a second flag rather than a reuse of draining, and the difference is the whole
+	// point of StopAccepting: announcing that this replica is going away must not tear
+	// down the listener that has to answer /ready while it goes. Sharing one flag meant a
+	// StopAccepting that raced ahead of Serve closed the listener before it ever accepted
+	// anything.
+	stopped bool
+
+	http  *http.Server
+	bound atomic.Bool
 
 	// wg tracks one goroutine per live connection — the handler goroutine that becomes
 	// the reader. Drain waits on it, which is what makes FR-19's bound assertable.
@@ -203,6 +256,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Hub == nil {
 		return nil, fmt.Errorf("server: Options.Hub is required")
+	}
+	if opts.Bus == nil {
+		return nil, fmt.Errorf("server: Options.Bus is required; GET /ready cannot be answered")
 	}
 	cfg := opts.Config
 
@@ -242,6 +298,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		cfg:                cfg,
 		hub:                opts.Hub,
+		bus:                opts.Bus,
 		webhook:            connector,
 		clock:              opts.Clock,
 		log:                log,
@@ -275,11 +332,13 @@ func New(opts Options) (*Server, error) {
 	}
 	s.mux = http.NewServeMux()
 	s.mux.Handle(s.path(), s)
+	s.mux.HandleFunc("GET "+healthPath, s.health)
+	s.mux.HandleFunc("GET "+readyPath, s.ready)
 	return s, nil
 }
 
 // Handler returns the HTTP handler for this server: the websocket endpoint mounted at
-// server.path, and 404 everywhere else (FR-1).
+// server.path, GET /health, GET /ready, and 404 everywhere else (FR-1, FR-20).
 func (s *Server) Handler() http.Handler { return s.mux }
 
 // Serve accepts connections on l until Drain shuts it down, and returns
@@ -295,12 +354,12 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 
 	s.mu.Lock()
-	draining := s.draining
-	if !draining {
+	stopped := s.stopped
+	if !stopped {
 		s.http = srv
 	}
 	s.mu.Unlock()
-	if draining {
+	if stopped {
 		if err := l.Close(); err != nil {
 			// coverage: closing a listener the caller just opened fails only on an
 			// already-closed one; the drain answer below is the same either way.
@@ -346,6 +405,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Drain(ctx context.Context) error {
 	s.mu.Lock()
 	s.draining = true
+	s.stopped = true
 	srv := s.http
 	live := make([]*conn.Conn, 0, len(s.conns))
 	for c := range s.conns {

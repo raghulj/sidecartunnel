@@ -35,14 +35,14 @@ type Envelope struct {
 	// and never by an application.
 	From string `json:"from"`
 
-	// ID is echoed in logs and metrics exemplars for tracing. The hub does not use it.
+	// ID is echoed in logs for tracing. The hub does not use it.
 	ID string `json:"id"`
 }
 
 // ParseEnvelope decodes one published payload.
 //
 // An envelope that is not a JSON object, or is missing event or data, is an error: the
-// caller drops the message and counts st_messages_dropped_total{reason="malformed"}. Note
+// caller drops the message and logs the channel it arrived on, never the payload. Note
 // that "data": null is a value and therefore valid, while an absent data is not — the two
 // are different things and only the second is a publisher bug.
 //

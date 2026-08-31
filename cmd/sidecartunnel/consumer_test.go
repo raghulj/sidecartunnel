@@ -7,11 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/hub"
-	"github.com/raghulj/sidecartunnel/internal/metrics"
 	"github.com/raghulj/sidecartunnel/internal/proto"
 )
 
@@ -20,7 +17,6 @@ import (
 type consumerFixture struct {
 	bus      *bus.MemoryBus
 	hub      *hub.Hub
-	reg      *prometheus.Registry
 	consumer *consumer
 	logs     *syncBuffer
 
@@ -29,17 +25,12 @@ type consumerFixture struct {
 
 func newConsumerFixture(t *testing.T, workers int) *consumerFixture {
 	t.Helper()
-	reg := prometheus.NewRegistry()
-	m, err := metrics.New(reg, metrics.Options{App: "app", Separator: "-", Namespaces: []string{"", "room"}})
-	if err != nil {
-		t.Fatalf("metrics.New: %v", err)
-	}
 	b := bus.NewMemory(64)
 	h := hub.New(context.Background(), b, hub.Options{Prefix: "st:", Separator: "-"})
 	log, logs := capturingLogger(t, slogDebug)
 
-	f := &consumerFixture{bus: b, hub: h, reg: reg, logs: logs, flushed: make(chan struct{}, 8)}
-	f.consumer = newConsumer(b, h, m, log, []byte(testControlSecret), "st:", workers,
+	f := &consumerFixture{bus: b, hub: h, logs: logs, flushed: make(chan struct{}, 8)}
+	f.consumer = newConsumer(b, h, log, []byte(testControlSecret), workers,
 		func() { f.flushed <- struct{}{} }, func() time.Time { return controlNow })
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,8 +75,8 @@ func (f *consumerFixture) subscribe(t *testing.T, s hub.Sink, channels ...string
 }
 
 // TestConsumer_FansOutABusMessage_FR12 is the delivery path below the socket: a publish on
-// a bus key reaches every subscriber this replica holds, and the message is counted under
-// its namespace rather than under its channel name (docs/06-channels.md §2).
+// a bus key reaches every subscriber this replica holds, and the frame that arrives names
+// the bare channel rather than the prefixed bus key (FR-21).
 func TestConsumer_FansOutABusMessage_FR12(t *testing.T) {
 	f := newConsumerFixture(t, 2)
 	s := newTestSink("c1", "u-7")
@@ -97,18 +88,18 @@ func TestConsumer_FansOutABusMessage_FR12(t *testing.T) {
 	if !strings.Contains(string(frame.Data), `"channel":"room-4410"`) {
 		t.Fatalf("frame = %s, want a push for room-4410", frame.Data)
 	}
-	if got := metricValue(t, f.reg, "st_messages_published_total", map[string]string{"namespace": "room"}); got != 1 {
-		t.Fatalf("st_messages_published_total{namespace=room} = %v, want 1", got)
-	}
 }
 
-// TestConsumer_MalformedEnvelopeIsDroppedAndCounted covers docs/04-integration.md §2.2: an
-// envelope missing event or data is dropped and counted in
-// st_messages_dropped_total{reason="malformed"}, and its payload never reaches the log.
+// TestConsumer_MalformedEnvelopeIsDroppedAndLogged covers docs/04-integration.md §2.2: an
+// envelope missing event or data is dropped, the drop is logged with the channel it was
+// published to, and its payload never reaches the log.
+//
+// The log line is the whole record of the drop now, so this asserts on it directly: the
+// channel is there to grep for, and the payload must not be (NFR-7).
 //
 // A single worker makes the ordering a synchronisation point rather than a sleep: the
 // good message that follows cannot be delivered until the bad one has been handled.
-func TestConsumer_MalformedEnvelopeIsDroppedAndCounted(t *testing.T) {
+func TestConsumer_MalformedEnvelopeIsDroppedAndLogged(t *testing.T) {
 	f := newConsumerFixture(t, 1)
 	s := newTestSink("c1", "u-7")
 	f.subscribe(t, s, "room-4410")
@@ -117,8 +108,8 @@ func TestConsumer_MalformedEnvelopeIsDroppedAndCounted(t *testing.T) {
 	f.publish(t, "st:room-4410", []byte(`{"event":"x","data":{}}`))
 	s.waitFrame(t)
 
-	if got := metricValue(t, f.reg, "st_messages_dropped_total", map[string]string{"reason": "malformed"}); got != 1 {
-		t.Fatalf("st_messages_dropped_total{reason=malformed} = %v, want 1", got)
+	if !strings.Contains(f.logs.String(), `"channel":"st:room-4410"`) {
+		t.Fatalf("the drop was not logged with its channel:\n%s", f.logs.String())
 	}
 	if strings.Contains(f.logs.String(), "hunter2") {
 		t.Fatalf("a dropped payload reached the log (NFR-7): %q", f.logs.String())
@@ -183,8 +174,8 @@ func TestConsumer_ControlRejections(t *testing.T) {
 				signControl(testControlSecret, controlNow, `{"action":"disconnect","user":"u-7"}`))
 			rejected.waitClose(t)
 
-			if got := metricValue(t, f.reg, "st_control_rejected_total", map[string]string{"reason": tt.reason}); got != 1 {
-				t.Fatalf("st_control_rejected_total{reason=%s} = %v, want 1", tt.reason, got)
+			if want := `"reason":"` + tt.reason + `"`; !strings.Contains(f.logs.String(), want) {
+				t.Fatalf("the rejection was not logged with %s:\n%s", want, f.logs.String())
 			}
 			if got := rejected.closeCount(); got != 1 {
 				t.Fatalf("connection closed %d times; the rejected message was applied too (FR-23)", got)
@@ -295,17 +286,13 @@ func TestConsumer_DispatchIsParallel(t *testing.T) {
 // that are about one loop rather than about the whole path.
 func bareConsumer(t *testing.T, workers int) *consumer {
 	t.Helper()
-	m, err := metrics.New(prometheus.NewRegistry(), metrics.Options{})
-	if err != nil {
-		t.Fatalf("metrics.New: %v", err)
-	}
 	b := bus.NewMemory(4)
 	h := hub.New(context.Background(), b, hub.Options{})
 	t.Cleanup(func() {
 		h.Close()
 		_ = b.Close()
 	})
-	return newConsumer(b, h, m, discardLogger(), []byte(testControlSecret), "st:", workers, nil, nil)
+	return newConsumer(b, h, discardLogger(), []byte(testControlSecret), workers, nil, nil)
 }
 
 // blockingSink parks inside Send until it is released, so a test can observe how many

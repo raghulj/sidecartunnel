@@ -23,7 +23,7 @@ the application side, then [`10-operations.md`](10-operations.md) §7 for the ru
 | `maxmemory-policy` | Any. Pub/sub holds no keys. | Documented so nobody tunes it for this | — |
 | Persistence | Not required | Redis holds nothing but in-flight delivery | — |
 | Failover | Single instance is supported. Cluster and sharded pub/sub are **not built**. | `12-roadmap.md` §2 | — |
-| `st_bus_reconnects_total` after **1 hour** of load | **0** | A climbing counter against a healthy Redis is output-buffer eviction | `/metrics` |
+| Reconnect churn after **1 hour** of load | `bus_reconnects` flat | A `bus_reconnects` count that climbs while `bus_connected` stays true is output-buffer eviction, not an unstable Redis | Curl `GET /ready` twice and compare `bus_reconnects` (§4.1) |
 
 ### 1.2 Proxy And TLS
 
@@ -86,18 +86,17 @@ the application side, then [`10-operations.md`](10-operations.md) §7 for the ru
 
 | Item | Required state | Verify |
 |---|---|---|
-| `server.allowed_origins` | Every exact origin, scheme included. No wildcards, no suffix matching. | A foreign origin returns **403** and increments `st_origin_rejected_total` |
+| `server.allowed_origins` | Every exact origin, scheme included. No wildcards, no suffix matching. | A foreign origin returns **403** and logs `origin rejected` with the origin and remote address |
 | `server.allow_missing_origin` | **`false`** | Enabling it removes the defence for browsers too |
 | `app.webhook_secrets` | **≥ 32 bytes** each, from a CSPRNG | Length check in config validation; the process refuses to start otherwise |
 | `control.secret` | **≥ 32 bytes**, and **different** from the webhook secret | Distinct values in the secret store |
 | Secret delivery | `_FILE` suffix or a secret manager. Never an image layer, a Dockerfile, a compose file or the repository. | `docker history` shows no secret |
 | Secret rotation | **Rehearsed**, not merely possible | See §3.1 |
-| `admin.listen` | Loopback or an internal address, **never published** | `docker port` shows no **9001**; the shipped image deliberately omits `EXPOSE 9001` |
-| `admin.token` | Set | Unset makes the authenticated routes return **404**, which is indistinguishable from working |
 | `/ready` | Wired to readiness only, **never to a liveness probe** | A Redis restart makes every replica unready at once; on a liveness probe that kills the fleet and converts an 8-second blip into a full outage |
 | `/health` | Wired to liveness. Never consults the bus. | The container healthcheck runs `sidecartunnel healthcheck` |
+| Proxy | Forwards only `server.path` to the gateway | `/health` and `/ready` carry no credential; they are unreachable from outside only because nothing routes to them, which is defence in depth, not the reason they are safe to expose |
 | Logs | No cookie, no `Authorization` header, no webhook body, no message payload, at any level | Grep a day of logs for a session cookie name |
-| Channel names | Contain nothing secret | Names appear in logs, metrics labels and the admin API by design |
+| Channel names | Contain nothing secret | Names appear only in logs, by design |
 | Session cookies | `Secure`, `HttpOnly`, `SameSite=Lax` or stricter | `SameSite=None` removes the browser's own cross-site websocket defence, leaving only the Origin allowlist |
 | Redis | Reachable only from the private network. Password or ACL set if it crosses any boundary. | Anything that reaches Redis can publish to any channel — **not defended** |
 
@@ -123,55 +122,59 @@ needed quickly.
 
 ## 4. Operations
 
-### 4.1 Metrics To Scrape
+### 4.1 Observability
 
-`/metrics` on the admin listener. Scrape interval **15s**.
+There is no metrics endpoint and no admin listener. `internal/metrics` and `internal/admin`
+do not exist; the gateway serves exactly one HTTP listener, `server.listen`, carrying the
+websocket route plus `/health` and `/ready` — everything else is a 404. The admin listener
+existed to keep `/channels` off the public internet by construction, which defends against a
+proxy misconfiguration rather than an attacker; it cost a package, a second server, two
+config keys and a credential for a convenience over grepping a log the gateway already
+writes. What remains is smaller and has to be read, not scraped:
 
-| Metric | Type | Use |
+| Surface | Carries | Use |
 |---|---|---|
-| `st_connections_current` | gauge | Capacity, and the deploy cliff |
-| `st_connections_total{result}` | counter | `origin_rejected` climbing means probing or a misconfigured allowlist |
-| `st_connection_duration_seconds` | histogram | A falling median means something is reaping sockets, usually a proxy timeout |
-| `st_subscriptions_current` | gauge | Per namespace |
-| `st_messages_published_total` | counter | Flattening is the closest thing to a publish error signal |
-| `st_messages_delivered_total` | counter | Ratio to published is average fan-out |
-| `st_messages_dropped_total{reason}` | counter | `oversize`, `malformed`, `no_subscriber` |
-| `st_webhook_duration_seconds` | histogram | The application's auth latency, which drives the storm arithmetic |
-| `st_webhook_inflight` | gauge | At the cap means a storm in progress |
-| `st_webhook_requests_total{status}` | counter | The 401 rate is revocations, or a broken session backend |
-| `st_bus_subscriptions_current` | gauge | Should track distinct active channels |
-| `st_bus_reconnects_total` | counter | Climbing against a healthy Redis is output-buffer eviction |
-| `st_bus_intake_depth` | gauge | Sustained non-zero means dispatch workers are behind the reader |
-| `st_bus_sync_failures_total` | counter | Channels held locally but not subscribed upstream |
-| `st_origin_rejected_total` | counter | Probing, or a misconfigured allowlist |
-| `st_control_rejected_total{reason}` | counter | Unsigned or stale control messages |
-| `st_slow_consumer_disconnects_total` | counter | `outbound_queue` too small, or genuinely bad clients |
-| `st_subscribe_denied_total` | counter | A spike is a client bug or a grant bug |
+| Logs, one JSON line per event | `level`, an event message, and the **client id** on every connection-scoped line | The client id ties every line for one connection together (§4.3) |
+| `GET /ready` | `{"ready":bool,"bus_connected":bool,"bus_down_for_seconds":float,"bus_reconnects":int,"draining":bool}`, no credential | This replica's bus state, right now. `bus_reconnects` is cumulative for the process's life — read it by curling twice and comparing |
+| Subscribe/unsubscribe log lines | `client`, `channel` | What this replica believes is subscribed. Publishing goes over the bus with no error channel back to the caller, so a publish that reaches nobody and one that reaches ten thousand subscribers look identical without a grep of this log |
 
-Application-side, scrape the same three things about the webhook route: request rate,
-error rate by status, and p99 latency. The gateway's view and the application's view
-disagreeing is itself a signal.
+Neither `/health` nor `/ready` carries a credential. Each leaks only "this process is up"
+and "this process can reach Redis" — what a load balancer needs, and what every health
+endpoint on the internet already says. In the documented deployment the proxy forwards only
+`server.path`, so neither is publicly reachable anyway; that is defence in depth, not the
+reason they are safe to leave open.
+
+Ship stdout wherever the platform already collects it — the container runtime's log
+driver, journald, a shipper. There is no scrape target to stand up and no dashboard to
+build; `log.level` and `log.format` (`08-config.md` §3) are the only knobs.
+
+Application-side, the webhook client logs `duration_ms`, `cached` and the outcome on every
+call. That is the webhook's request rate, error rate and p99 latency, read off the same
+lines rather than scraped separately.
 
 ### 4.2 Alerts
 
-Thresholds sized for **20,000 connections across two replicas**. Replace with measured
-baselines after the first month.
+Every alert here is keyed on a log line, on `/ready`, or on a platform signal already
+available (restart count, memory, CPU, the Docker `HEALTHCHECK` result). Thresholds sized
+for **20,000 connections across two replicas**; replace with measured baselines after the
+first month.
 
-| Alert | Condition | For | Severity | Means |
-|---|---|---|---|---|
-| Bus eviction | `rate(st_bus_reconnects_total[5m]) > 0` | 10m | **page** | Redis pub/sub output buffer too small (§1.1) |
-| Webhook saturated | `st_webhook_inflight >= app.webhook_concurrency` | 1m | **page** | Reconnect storm, or the application is slow |
-| Webhook errors | `rate(st_webhook_requests_total{status=~"5.."}[5m]) > 0.1/s` | 5m | **page** | The application cannot authorize |
-| Webhook refusals | `rate(st_webhook_requests_total{status="401"}[5m])` above 10× baseline | 5m | **page** | A deploy returning 401 where it means 500. Locks users out permanently. |
-| Connection cliff | `st_connections_current` drops **>30%** in 5m outside a deploy | 5m | **page** | Proxy, gateway or application failure |
-| Capacity | `st_connections_current > 0.8 × limits.max_connections` | 15m | ticket | Add a replica |
-| Slow consumers | `rate(st_slow_consumer_disconnects_total[15m])` above 3× baseline | 15m | ticket | `outbound_queue` too small for the message rate |
-| Grant denials | `rate(st_subscribe_denied_total[15m])` above 3× baseline | 15m | ticket | A grant bug or a client bug shipped |
-| Control rejected | `increase(st_control_rejected_total[1h]) > 0` | — | ticket | Secret mismatch, clock skew, or a forged publish |
-| Origin rejected | `rate(st_origin_rejected_total[15m])` above baseline | 15m | ticket | Probing, or an origin missing from the allowlist |
-| Bus sync failing | `st_bus_sync_failures_total` increasing | 10m | ticket | Channels locally held, not subscribed upstream — silent channels |
-| Intake backlog | `st_bus_intake_depth > 0` | 10m | ticket | Dispatch workers behind the reader |
-| Not ready | `/ready` returning 503 | 2m | **page** | Bus down longer than `bus.ready_grace` (**30s**) |
+| Alert | Condition | Severity | Means |
+|---|---|---|---|
+| Not ready | Load balancer's health check sees `/ready` return 503 past `bus.ready_grace` (**30s**) | **page** | Bus down longer than the grace window (§1.1) |
+| Webhook refused / unavailable / rejected the gateway | Rate of the matching log line above baseline (§4.1) | **page** | 401-for-500, an app that cannot authorize, or a bad `app.webhook_secrets`/clock (§3.1) |
+| Replica unhealthy | Restart count > 0 outside a deploy, or the Docker `HEALTHCHECK` failing | **page** | Crash loop, or the process is up but not answering |
+| Connection cliff | Load balancer's active-connection count for an upstream drops **>30%** in 5m outside a deploy | **page** | Proxy, gateway or application failure |
+| Origin / control rejected | Rate of `origin rejected` / any `control message rejected` line | ticket | Probing or a missing allowlist entry; secret mismatch, clock skew, or a forged publish |
+| Slow consumers | Rate of `connection closed` with `reason":"outbound queue full"` above 3× baseline | ticket | `outbound_queue` too small, or genuinely bad clients |
+| Capacity | Open file descriptors per replica, or the load balancer's per-upstream count, approaching `limits.max_connections` headroom (§1.4) | ticket | Add a replica |
+
+Four of the old alerts cannot be rebuilt — the resync and a failed `Sync` retry were always
+silent, so bus eviction and bus sync failures have no signal beyond polling `/ready` for a
+`bus_connected:false` blip (or a climbing `bus_reconnects` while `bus_connected` stays true)
+and comparing the subscribe log to what the publisher expects. A grant denial goes to the
+client and nowhere else; verify by hand (§4.3, §5.3). Webhook saturation has no gauge or log
+line; rising `duration_ms` is the only indirect warning.
 
 Two alerts must not exist: anything wired to `/ready` as a **liveness** probe, and any
 alert that restarts replicas automatically on bus loss. Both convert a short Redis blip
@@ -185,13 +188,13 @@ minute:
 | Symptom | First check |
 |---|---|
 | Disconnects every ~60s | Proxy idle timeout below `ping_interval` (§1.2) |
-| Nobody receives anything, connections fine | `/ready`, then the channel name against `GET /channels` |
+| Nobody receives anything, connections fine | `/ready`, then `grep '"msg":"subscribe"'` for the channel name against `client` |
 | Some users receive, others do not | `bus.kind: memory` with more than one replica |
-| `st_bus_reconnects_total` climbing, Redis healthy | Pub/sub output buffer (§1.1) |
+| Connections keep dropping and resubscribing, Redis is healthy | Pub/sub output buffer (§1.1). No counter distinguishes it from an unstable Redis directly — poll `/ready` and watch `bus_reconnects` climb while `bus_connected` stays true |
 | Application falls over on deploy | Reconnect storm, `10-operations.md` §4 |
 | 401s from the webhook after a deploy | The application is returning 401 where it means 500 |
-| A channel is subscribed locally but silent | `st_bus_sync_failures_total` |
-| `st_slow_consumer_disconnects_total` climbing | `outbound_queue`, or genuinely bad clients |
+| A channel is subscribed locally but silent, `/ready` is 200 | `Sync` failed and is retrying silently — it is never logged. Compare the subscribe log against what the publisher believes it holds; that comparison is the whole signal |
+| Connections closing with `"reason":"outbound queue full"` in the logs | `outbound_queue` too small for the message rate, or genuinely bad clients |
 
 The **client id** is the join key across every log line for a connection. It is the value
 to ask a reporting user for, and the value to grep.
@@ -279,20 +282,19 @@ Watch, in this order:
 
 | # | Signal | Healthy | Act if |
 |---|---|---|---|
-| 1 | `st_webhook_requests_total{status="401"}` | Matches the known revocation rate | Any spike. **Roll back.** A wrong 401 closes with `reconnect: false` and users do not come back until they reload. |
-| 2 | `st_webhook_requests_total{status=~"5.."}` | **0** | Non-zero. The application cannot authorize. |
-| 3 | `st_webhook_duration_seconds` p99 | Under **200 ms** and flat | Rising — it drives the storm arithmetic |
-| 4 | Application request queue depth | Flat | Any correlation with `st_connections_current` |
-| 5 | `st_connections_current` | Rises to the cohort size and holds | A sawtooth means something is reaping sockets, usually the proxy |
-| 6 | `st_connection_duration_seconds` median | Well above `ping_interval` (**25s**) | Clustered near a round number — a proxy idle timeout |
-| 7 | `st_subscribe_denied_total` | **0** | Non-zero is a grant bug. Fix the grants, not the channel names. |
-| 8 | `st_origin_rejected_total` | 0, or a low probing floor | Correlated with the rollout — an origin is missing from the allowlist |
-| 9 | `st_bus_reconnects_total` | **0** | Non-zero is output-buffer eviction (§1.1) |
-| 10 | `st_slow_consumer_disconnects_total` | Near 0 | Scaling with publish volume means `outbound_queue` is too small |
-| 11 | `st_messages_published_total` | Tracks the application's write rate | Flat while writes continue means a wrong channel name — check `GET /channels` |
+| 1 | Rate of `connect webhook refused the connection` in the logs | Matches the known revocation rate | Any spike. **Roll back.** A wrong 401 closes with `reconnect: false` and users do not come back until they reload. |
+| 2 | Rate of `connect webhook unavailable` / `rejected the gateway's request` | Zero | Non-zero. The application cannot authorize, or the gateway's own secret or clock is wrong. |
+| 3 | `duration_ms` on the webhook log lines | Under **200 ms** and flat | Rising — it drives the storm arithmetic |
+| 4 | Application request queue depth | Flat | Any correlation with the rollout |
+| 5 | Active connections at the load balancer | Rises to the cohort size and holds | A sawtooth means something is reaping sockets, usually the proxy |
+| 6 | `connection closed` reasons in the logs | Few, and not clustered | A cluster near one duration is a proxy idle timeout (`ping_interval` is **25s**) |
+| 7 | Rate of `origin rejected` | 0, or a low probing floor | Correlated with the rollout — an origin is missing from the allowlist |
+| 8 | `/ready`, polled every few seconds | Always 200, `bus_connected: true` | A `bus_connected:false` blip against a healthy Redis is output-buffer eviction (§1.1) |
+| 9 | Rate of `connection closed` with `"reason":"outbound queue full"` | Near zero | Scaling with publish volume means `outbound_queue` is too small |
+| 10 | The subscribe log against the application's write rate | Every channel the application writes to appears, with a `client` | A channel absent while writes continue is a wrong channel name |
 
-Two failure modes are invisible on a dashboard and must be checked by hand in the first
-hour:
+Two failure modes leave no log line and no signal on `/health` or `/ready`, and must still
+be checked by hand in the first hour:
 
 - **Missing reconciliation.** Nothing reports it. Restart one replica and confirm a client
   ends up holding every message published during the gap.

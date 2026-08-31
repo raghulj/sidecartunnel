@@ -67,9 +67,11 @@ that caused the slow consumer in the first place.
 Queue depth is a tuning knob, but a cheaper one than it looks. **The queue holds pointers
 to a single shared, immutable buffer** encoded once per message (`09-internals.md` §5), so
 depth costs 256 × 16 bytes ≈ 4 KiB per connection, not 256 × message size. Getting this
-wrong on paper produced a 160 GiB memory estimate against a 1 GiB budget. Watch
-`st_slow_consumer_disconnects_total`; sustained non-zero means the depth is too small for
-the message rate, or the clients are genuinely bad.
+wrong on paper produced a 160 GiB memory estimate against a 1 GiB budget. Watch the log
+for `connection closed` lines carrying `"code":3005`; a sustained rate means the depth is
+too small for the message rate, or the clients are genuinely bad. Group them by `client` to
+tell the two apart — a handful of ids recurring is the clients, a broad set that scales with
+publish volume is the depth (`10-operations.md` §7).
 
 ## 5. Ordering
 

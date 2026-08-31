@@ -231,25 +231,17 @@ func TestValidate(t *testing.T) {
 		}, want: "control.secret", notWant: "0123456789abcdef0123456789abcde"},
 		{name: "control.refresh_spread negative", mut: func(c *Config) { c.Control.RefreshSpread = Duration(-time.Second) }, want: "control.refresh_spread"},
 
-		// --- admin ---
-		{name: "admin.listen empty", mut: func(c *Config) { c.Admin.Listen = "" }, want: "admin.listen"},
-		{name: "admin.listen has no port", mut: func(c *Config) { c.Admin.Listen = "127.0.0.1" }, want: "admin.listen"},
-		{name: "admin.listen equals server.listen", mut: func(c *Config) {
-			c.Server.Listen = ":8000"
-			c.Admin.Listen = ":8000"
-		}, want: "admin.listen"},
-		{name: "admin.listen collides through a wildcard host", mut: func(c *Config) {
-			c.Server.Listen = ":9001"
-			c.Admin.Listen = "127.0.0.1:9001"
-		}, want: "admin.listen"},
-		{name: "admin.listen same port different explicit host", mut: func(c *Config) {
-			c.Server.Listen = "10.0.0.1:9001"
-			c.Admin.Listen = "127.0.0.1:9001"
-		}},
-		{name: "admin.listen both ephemeral", mut: func(c *Config) {
-			c.Server.Listen = ":0"
-			c.Admin.Listen = ":0"
-		}},
+		// --- server.listen ---
+		//
+		// There is one listener. The rule that admin.listen had to be a different socket
+		// from server.listen went with it (docs/12-roadmap.md §2), so what is left is
+		// that the address is bindable at all.
+		{name: "server.listen empty", mut: func(c *Config) { c.Server.Listen = "" }, want: "server.listen"},
+		{name: "server.listen has no port", mut: func(c *Config) { c.Server.Listen = "0.0.0.0" }, want: "server.listen"},
+		{name: "server.listen port is not a number", mut: func(c *Config) { c.Server.Listen = ":http" }, want: "server.listen"},
+		{name: "server.listen port out of range", mut: func(c *Config) { c.Server.Listen = ":70000" }, want: "server.listen"},
+		{name: "server.listen ephemeral", mut: func(c *Config) { c.Server.Listen = ":0" }},
+		{name: "server.listen explicit host", mut: func(c *Config) { c.Server.Listen = "10.0.0.1:8000" }},
 
 		// --- log ---
 		{name: "log.level unknown", mut: func(c *Config) { c.Log.Level = "chatty" }, want: "log.level"},

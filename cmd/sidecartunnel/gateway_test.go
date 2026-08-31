@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/raghulj/sidecartunnel/internal/config"
 	"github.com/raghulj/sidecartunnel/internal/proto"
 )
@@ -26,7 +24,6 @@ type fixture struct {
 	*gateway
 	stub   *stubWebhook
 	logs   *syncBuffer
-	reg    *prometheus.Registry
 	signal chan os.Signal
 	exit   chan int
 }
@@ -41,12 +38,11 @@ func newFixture(t *testing.T, g grant, overrides map[string]string) *fixture {
 	cfg := loadConfig(t, env)
 
 	log, logs := capturingLogger(t, slogDebug)
-	reg := prometheus.NewRegistry()
-	gw, err := build(context.Background(), cfg, reg, log)
+	gw, err := build(context.Background(), cfg, log)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	return &fixture{gateway: gw, stub: stub, logs: logs, reg: reg,
+	return &fixture{gateway: gw, stub: stub, logs: logs,
 		signal: signalChan(4), exit: make(chan int, 1)}
 }
 
@@ -80,7 +76,12 @@ func (f *fixture) waitExit(t *testing.T) int {
 	}
 }
 
-func (f *fixture) adminURL(path string) string { return "http://" + f.adminLn.Addr().String() + path }
+// probeURL is a route on the one listener this gateway runs. /health and /ready are
+// served from server.listen alongside the websocket endpoint; there is no second listener
+// (docs/12-roadmap.md §2).
+func (f *fixture) probeURL(path string) string {
+	return "http://" + f.clientLn.Addr().String() + path
+}
 
 // dial opens a websocket to the client listener with an allowlisted Origin and a cookie,
 // exactly as a browser would (FR-2, FR-3).
@@ -151,7 +152,7 @@ func TestBuild_RedisBusIsUsableWhileRedisIsDown(t *testing.T) {
 	env["ST_BUS__DIAL_TIMEOUT"] = "100ms"
 	cfg := loadConfig(t, env)
 
-	g, err := build(context.Background(), cfg, prometheus.NewRegistry(), discardLogger())
+	g, err := build(context.Background(), cfg, discardLogger())
 	if err != nil {
 		t.Fatalf("build with an unreachable redis = %v; a bus that is down is not a startup error (NFR-8)", err)
 	}
@@ -168,26 +169,12 @@ func TestBuild_RedisBusIsUsableWhileRedisIsDown(t *testing.T) {
 func TestBuild_Errors(t *testing.T) {
 	tests := []struct {
 		name    string
-		mutate  func(t *testing.T, cfg *config.Config, reg *prometheus.Registry)
+		mutate  func(t *testing.T, cfg *config.Config)
 		wantMsg string
 	}{
 		{
-			name: "a collector is already registered",
-			mutate: func(t *testing.T, _ *config.Config, reg *prometheus.Registry) {
-				t.Helper()
-				if err := reg.Register(prometheus.NewGauge(prometheus.GaugeOpts{
-					Name:        "st_connections_current",
-					Help:        "duplicate",
-					ConstLabels: prometheus.Labels{"app": "app"},
-				})); err != nil {
-					t.Fatalf("seed the registry: %v", err)
-				}
-			},
-			wantMsg: "metrics",
-		},
-		{
 			name: "bus.url is not a redis url",
-			mutate: func(_ *testing.T, cfg *config.Config, _ *prometheus.Registry) {
+			mutate: func(_ *testing.T, cfg *config.Config) {
 				cfg.Bus.Kind = "redis"
 				cfg.Bus.URL = "redis://localhost:6379/not-a-database"
 			},
@@ -195,43 +182,34 @@ func TestBuild_Errors(t *testing.T) {
 		},
 		{
 			name: "no webhook secret",
-			mutate: func(_ *testing.T, cfg *config.Config, _ *prometheus.Registry) {
+			mutate: func(_ *testing.T, cfg *config.Config) {
 				cfg.App.WebhookSecrets = nil
 			},
 			wantMsg: "app.webhook_secrets",
 		},
 		{
 			name: "an unparseable namespace rate limit",
-			mutate: func(_ *testing.T, cfg *config.Config, _ *prometheus.Registry) {
+			mutate: func(_ *testing.T, cfg *config.Config) {
 				cfg.Namespaces = []config.Namespace{{Name: "room", RateLimit: "ten per second"}}
 			},
 			wantMsg: "rate_limit",
 		},
 		{
 			name: "server.listen is already bound",
-			mutate: func(t *testing.T, cfg *config.Config, _ *prometheus.Registry) {
+			mutate: func(t *testing.T, cfg *config.Config) {
 				t.Helper()
 				cfg.Server.Listen = newHeldPort(t)
 			},
 			wantMsg: "server.listen",
-		},
-		{
-			name: "admin.listen is already bound",
-			mutate: func(t *testing.T, cfg *config.Config, _ *prometheus.Registry) {
-				t.Helper()
-				cfg.Admin.Listen = newHeldPort(t)
-			},
-			wantMsg: "admin.listen",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stub := newStubWebhook(t, grant{user: "u-7", expiresIn: 3600})
 			cfg := loadConfig(t, testEnv(stub.URL))
-			reg := prometheus.NewRegistry()
-			tt.mutate(t, cfg, reg)
+			tt.mutate(t, cfg)
 
-			g, err := build(context.Background(), cfg, reg, discardLogger())
+			g, err := build(context.Background(), cfg, discardLogger())
 			if err == nil {
 				g.close()
 				t.Fatalf("build succeeded with %s", tt.name)
@@ -239,7 +217,7 @@ func TestBuild_Errors(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.wantMsg) {
 				t.Fatalf("build error = %q, want it to name %q", err, tt.wantMsg)
 			}
-			for _, secret := range []string{testWebhookSecret, testControlSecret, "admin-token"} {
+			for _, secret := range []string{testWebhookSecret, testControlSecret} {
 				if strings.Contains(err.Error(), secret) {
 					t.Fatalf("a startup error quoted a secret: %q", err)
 				}
@@ -248,47 +226,33 @@ func TestBuild_Errors(t *testing.T) {
 	}
 }
 
-// TestGateway_AdminSurface_FR20 is the operator listener as a whole: liveness, readiness,
-// the exposition, and the token-gated routes.
-func TestGateway_AdminSurface_FR20(t *testing.T) {
+// TestGateway_ProbeSurface_FR20 is everything the gateway answers over HTTP besides the
+// websocket endpoint: liveness, readiness, and nothing else.
+//
+// The four 404s are the scope cut, pinned. The Prometheus exposition and the operator API
+// both existed and both are gone (docs/12-roadmap.md §2), and a deployment still pointing a
+// scrape or a runbook at either should get an unambiguous answer rather than a hang.
+func TestGateway_ProbeSurface_FR20(t *testing.T) {
 	f := newFixture(t, grant{user: "u-7", channels: []string{"room-*"}, expiresIn: 3600}, nil)
 	f.start(t)
 
-	if code, body := httpGet(t, f.adminURL("/health"), ""); code != http.StatusOK {
+	if code, body := httpGet(t, f.probeURL("/health"), ""); code != http.StatusOK {
 		t.Fatalf("GET /health = %d %s, want 200", code, body)
 	}
-	if code, body := httpGet(t, f.adminURL("/ready"), ""); code != http.StatusOK {
+	if code, body := httpGet(t, f.probeURL("/ready"), ""); code != http.StatusOK {
 		t.Fatalf("GET /ready = %d %s, want 200 on a connected bus", code, body)
 	}
 
-	code, body := httpGet(t, f.adminURL("/metrics"), "")
-	if code != http.StatusOK {
-		t.Fatalf("GET /metrics = %d, want 200", code)
-	}
-	for _, family := range []string{
-		"st_connections_current", "st_bus_subscriptions_current", "st_bus_intake_depth",
-		"st_webhook_inflight", "st_messages_dropped_total",
-	} {
-		if !strings.Contains(body, family) {
-			t.Fatalf("/metrics does not expose %s", family)
+	for _, path := range []string{"/metrics", "/channels", "/channels/room-4410", "/disconnect"} {
+		if code, _ := httpGet(t, f.probeURL(path), ""); code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404: that surface was removed", path, code)
 		}
-	}
-	if !strings.Contains(body, `app="app"`) {
-		t.Fatal("/metrics does not carry the app label from app.name")
-	}
-
-	// FR-20: /channels needs the bearer token, and answers 401 without it.
-	if code, _ := httpGet(t, f.adminURL("/channels"), ""); code != http.StatusUnauthorized {
-		t.Fatalf("GET /channels without a token = %d, want 401", code)
-	}
-	if code, _ := httpGet(t, f.adminURL("/channels"), "admin-token"); code != http.StatusOK {
-		t.Fatalf("GET /channels with the token = %d, want 200", code)
 	}
 }
 
 // TestGateway_ConnectSubscribeAndDeliver_FR1_FR5_FR12 is the whole product in one test: a
 // browser connects, the application authorizes it, a publish on the bus arrives at the
-// socket, and the admin surface agrees about who holds what.
+// socket, and the log says who subscribed to what.
 func TestGateway_ConnectSubscribeAndDeliver_FR1_FR5_FR12(t *testing.T) {
 	f := newFixture(t, grant{user: "u-7", channels: []string{"room-*"}, expiresIn: 3600}, nil)
 	f.start(t)
@@ -308,13 +272,14 @@ func TestGateway_ConnectSubscribeAndDeliver_FR1_FR5_FR12(t *testing.T) {
 		t.Fatalf("connect made %d webhook calls, want exactly 1", f.stub.callCount())
 	}
 
-	// The channel this replica holds is visible to an operator (FR-20).
-	code, body := httpGet(t, f.adminURL("/channels"), "admin-token")
-	if code != http.StatusOK || !strings.Contains(body, `"channel":"room-4410"`) {
-		t.Fatalf("GET /channels = %d %s, want room-4410", code, body)
-	}
-	if _, body := httpGet(t, f.adminURL("/channels/room-4410"), "admin-token"); !strings.Contains(body, `"u-7"`) {
-		t.Fatalf("GET /channels/room-4410 = %s, want the holding user", body)
+	// The subscription is visible to an operator, in the log, keyed on the client id
+	// (docs/10-operations.md §6). This is the whole of the replacement for the removed
+	// GET /channels:
+	// a grep for the message and the channel name answers "was anybody subscribed?",
+	// which is the question the runbook's "nobody receives anything" entry asks.
+	if logs := f.logs.String(); !strings.Contains(logs, `"msg":"subscribe"`) ||
+		!strings.Contains(logs, `"channel":"room-4410"`) {
+		t.Fatalf("the subscribe was not logged with its channel:\n%s", logs)
 	}
 
 	// A publish on the bus, which is what an application's Redis PUBLISH becomes. The
@@ -431,42 +396,35 @@ func TestGateway_ReadyIs503WhileDraining(t *testing.T) {
 	f := newFixture(t, grant{user: "u-7", expiresIn: 3600}, nil)
 	f.start(t)
 
-	if code, _ := httpGet(t, f.adminURL("/ready"), ""); code != http.StatusOK {
+	if code, _ := httpGet(t, f.probeURL("/ready"), ""); code != http.StatusOK {
 		t.Fatalf("GET /ready = %d before the drain, want 200", code)
 	}
-	f.readiness.drain()
-	if code, body := httpGet(t, f.adminURL("/ready"), ""); code != http.StatusServiceUnavailable {
+	f.server.StopAccepting()
+	if code, body := httpGet(t, f.probeURL("/ready"), ""); code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /ready = %d %s while draining, want 503", code, body)
 	}
-	if code, _ := httpGet(t, f.adminURL("/health"), ""); code != http.StatusOK {
+	if code, _ := httpGet(t, f.probeURL("/health"), ""); code != http.StatusOK {
 		t.Fatalf("GET /health = %d while draining, want 200 (FR-20)", code)
 	}
 }
 
-// TestGateway_ListenerFailureIsFatal covers the path where a listener dies under the
+// TestGateway_ListenerFailureIsFatal covers the path where the listener dies under the
 // server: the gateway drains and exits 1 rather than running on with a surface that is
 // silently absent.
+//
+// There is one listener to lose now. It used to be two, and losing either was fatal for
+// the same reason; the second one went with the operator API it carried
+// (docs/12-roadmap.md §2).
 func TestGateway_ListenerFailureIsFatal(t *testing.T) {
-	tests := []struct {
-		name     string
-		sabotage func(f *fixture) error
-	}{
-		{"the client listener", func(f *fixture) error { return f.clientLn.Close() }},
-		{"the admin listener", func(f *fixture) error { return f.adminLn.Close() }},
+	f := newFixture(t, grant{user: "u-7", expiresIn: 3600}, nil)
+	defer f.close()
+	if err := f.clientLn.Close(); err != nil {
+		t.Fatalf("close the listener: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t, grant{user: "u-7", expiresIn: 3600}, nil)
-			defer f.close()
-			if err := tt.sabotage(f); err != nil {
-				t.Fatalf("close the listener: %v", err)
-			}
 
-			go func() { f.exit <- f.serve(context.Background(), f.signal) }()
-			if code := f.waitExit(t); code != exitFailure {
-				t.Fatalf("exit = %d after %s failed, want %d", code, tt.name, exitFailure)
-			}
-		})
+	go func() { f.exit <- f.serve(context.Background(), f.signal) }()
+	if code := f.waitExit(t); code != exitFailure {
+		t.Fatalf("exit = %d after the listener failed, want %d", code, exitFailure)
 	}
 }
 

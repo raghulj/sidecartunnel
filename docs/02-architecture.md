@@ -83,15 +83,16 @@ fixed worker pool. See the open question in `12-roadmap.md`.
 2. Application publishes `{"action":"disconnect","user":"u-7"}` to the control channel.
 3. Every replica closes that user's connections with `reconnect: false`.
 
-Using the bus rather than an HTTP admin call keeps this a one-liner for the application
-and reaches every replica without service discovery. The admin API can do the same thing
-for operators who are not the application.
+Using the bus rather than an HTTP call keeps this a one-liner for the application and
+reaches every replica without service discovery. It is also the only revocation route —
+there is no second, HTTP one for an operator who is not the application. See
+`04-integration.md` §3.
 
 ## What runs where
 
 A gateway replica has exactly three network relationships:
 
-- **inbound** websockets from clients, and admin HTTP on a separate listener
+- **inbound** websockets and HTTP (`/health`, `/ready`), on one listener
 - **outbound** HTTP to the application's connect webhook
 - **bidirectional** to Redis
 

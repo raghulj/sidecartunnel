@@ -18,8 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
 	"github.com/raghulj/sidecartunnel/internal/proto"
@@ -181,8 +179,6 @@ func testEnv(connectURL string) map[string]string {
 	return map[string]string{
 		"ST_SERVER__ALLOWED_ORIGINS": "https://app.example.com",
 		"ST_SERVER__LISTEN":          "127.0.0.1:0",
-		"ST_ADMIN__LISTEN":           "127.0.0.1:0",
-		"ST_ADMIN__TOKEN":            "admin-token",
 		"ST_APP__CONNECT_URL":        connectURL,
 		"ST_APP__WEBHOOK_SECRETS":    testWebhookSecret,
 		"ST_CONTROL__SECRET":         testControlSecret,
@@ -278,56 +274,6 @@ func waitSubscribed(t *testing.T, b interface{ Health() bus.Health }, n int) {
 
 // signals returns a channel a test can push fake signals onto.
 func signalChan(n int) chan os.Signal { return make(chan os.Signal, n) }
-
-// metricValue reads one sample out of a registry by family name and label set. It gathers
-// rather than reaching into internal/metrics, because what an operator's alert reads is
-// the exposition and nothing else.
-//
-// It returns 0 for a family that has not been touched, which is the same thing Prometheus
-// would report for a counter at zero.
-func metricValue(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) float64 {
-	t.Helper()
-	families, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	for _, f := range families {
-		if f.GetName() != name {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			// The label match is inline rather than in a helper on purpose: naming the
-			// *dto.Metric type would promote prometheus/client_model to a direct module
-			// requirement, and the dependency budget is four (docs/AGENTS.md §6).
-			matched := true
-			for k, v := range labels {
-				found := false
-				for _, pair := range m.GetLabel() {
-					if pair.GetName() == k && pair.GetValue() == v {
-						found = true
-						break
-					}
-				}
-				if !found {
-					matched = false
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-			switch {
-			case m.Counter != nil:
-				return m.Counter.GetValue()
-			case m.Gauge != nil:
-				return m.Gauge.GetValue()
-			case m.Histogram != nil:
-				return float64(m.Histogram.GetSampleCount())
-			}
-		}
-	}
-	return 0
-}
 
 // testSink is a hub.Sink for the consumer tests. The hub keys maps by Sink, so it must be
 // a pointer: an interface holding an uncomparable value panics the moment it is inserted.

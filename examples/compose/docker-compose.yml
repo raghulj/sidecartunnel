@@ -40,9 +40,6 @@ services:
       ST_LOG__LEVEL: "info"
       ST_LOG__FORMAT: "json"
 
-      # ST_ADMIN__LISTEN is deliberately not set. It defaults to 127.0.0.1:9001, the admin
-      # API is never published, and the image exposes port 8000 only.
-
     # No published ports. The socket must be same-origin with the application, so a front
     # proxy routes example.com/ws to sidecartunnel:8000 over this network
     # (docs/10-operations.md §2). For a single-replica local experiment, set
@@ -95,8 +92,8 @@ services:
     # The one Redis setting this system will not run correctly without. The default —
     # `pubsub 32mb 8mb 60` — disconnects the gateway during a broadcast burst, and the
     # resubscribe leaves it immediately behind again. The oscillation is stable rather
-    # than transient, and presents as st_bus_reconnects_total climbing against a Redis
-    # that looks perfectly healthy (docs/10-operations.md §3).
+    # than transient, and presents as GET /ready's bus_reconnects climbing against a
+    # Redis that looks perfectly healthy (docs/10-operations.md §3).
     command:
       - redis-server
       - --client-output-buffer-limit

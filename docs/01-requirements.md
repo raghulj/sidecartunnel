@@ -15,8 +15,8 @@ path (default `/ws`).
 
 **FR-2 — Origin allowlist.** The gateway MUST reject any upgrade whose `Origin` header is
 absent from `server.allowed_origins`, with HTTP 403, before any application call.
-*Accept:* a handshake with a foreign `Origin` returns 403, no webhook call is made, and
-`st_origin_rejected_total` increments.
+*Accept:* a handshake with a foreign `Origin` returns 403, no webhook call is made, and the
+gateway logs `origin rejected` once.
 
 **FR-3 — Cookie-forward authentication.** On accepting an upgrade, the gateway MUST call
 the application's connect webhook, forwarding the client's `Cookie` header verbatim, and
@@ -71,8 +71,8 @@ against grants that were revoked seconds earlier. Code review alone does not cat
 **FR-10 — Upstream subscription refcounting.** A replica MUST subscribe to a bus channel
 when its local subscriber count for that channel goes 0 → 1, and unsubscribe when it goes
 1 → 0.
-*Accept:* with one client subscribed and then disconnected, `st_bus_subscriptions_current`
-returns to its prior value.
+*Accept:* an integration test subscribes and then disconnects one client and asserts
+exactly one upstream SUBSCRIBE and one upstream UNSUBSCRIBE reach Redis.
 
 **FR-11 — Namespace resolution.** A channel MUST resolve to the namespace named by the
 substring before the first separator character. A channel whose namespace is not
@@ -91,9 +91,10 @@ that client id MUST NOT receive it.
 *Accept:* a two-client test where the excluded client receives nothing.
 
 **FR-14 — Oversize messages.** A published envelope larger than
-`limits.max_message_size` (default 32 KiB) MUST be dropped, logged once with the channel
-name, and counted in `st_messages_dropped_total{reason="oversize"}`.
-*Accept:* an oversize publish delivers nothing and increments the counter.
+`limits.max_message_size` (default 32 KiB) MUST be dropped and logged once with the
+channel name and reason `oversize`.
+*Accept:* an oversize publish delivers nothing and appears in the log dropped with reason
+`oversize`.
 
 **FR-15 — Bounded outbound queue.** Each connection MUST have an outbound queue of
 `limits.outbound_queue` messages (default 256). On overflow, the connection MUST be closed
@@ -144,13 +145,15 @@ the webhook with the real peer address. Passing it through would let an attacker
 an application's localhost trust path from the public internet — an auth bypass in the
 app, delivered by the gateway, under a header prefix implying the gateway vouched for it.
 
-**FR-20 — Admin surface.** The gateway MUST expose, on a separate listener,
-`/health`, `/ready`, `/metrics`, `/channels`, and `POST /disconnect`, with `/channels` and
-`/disconnect` requiring a bearer token compared in constant time.
-*Accept:* with `admin.token` configured, `/channels` without a token returns 401; with
-`admin.token` unset the authenticated routes are not registered at all and return **404**,
-so an accidentally unconfigured admin API looks absent rather than merely closed.
-`/metrics` requires no token in either case.
+**FR-20 — Health and readiness.** The gateway MUST expose `GET /health` and `GET /ready`
+on `server.listen`, unauthenticated. `/health` MUST return 200 while the process runs and
+MUST NOT consult the bus. `/ready` MUST return 503 once draining, or once the bus has been
+down longer than `bus.ready_grace`.
+*Accept:* `/health` returns 200 throughout a Redis outage; `/ready` returns 503 for the
+duration of one and recovers once the bus does. The two MUST NOT be collapsed into one
+route: a Redis restart makes every replica unready at once, and a liveness probe wired to
+`/ready` would kill every replica simultaneously, turning an eight-second blip into a full
+application outage.
 
 **FR-21 — Bus-key isolation.** The hub MUST key subscriptions by the full bus key
 (`{bus.prefix}{channel}`), never the bare channel name.

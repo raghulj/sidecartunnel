@@ -6,10 +6,10 @@ import "time"
 // workers when none is configured: bus.intake_queue in docs/08-config.md §3.
 const DefaultIntakeQueue = 4096
 
-// Health is a point-in-time view of a bus's transport, for /ready and for metrics.
+// Health is a point-in-time view of a bus's transport, for /ready and for tests.
 //
 // Every implementation in this package reports it, and reading it must never block: it is
-// read by the admin listener's /ready handler, and a readiness probe that queues behind a
+// read by the GET /ready handler, and a readiness probe that queues behind a
 // 30,000-channel resubscribe reports 503 for the duration of the thing it exists to
 // observe (docs/04-integration.md §4).
 type Health struct {
@@ -24,31 +24,30 @@ type Health struct {
 	// restart should be invisible (docs/13-review-findings.md M20).
 	DisconnectedFor time.Duration
 
-	// Reconnects counts transports established after the first one, for
-	// st_bus_reconnects_total. Climbing against a healthy Redis is the M8 signature —
-	// eviction for a slow subscriber, not an unstable server (docs/09-internals.md §5).
+	// Reconnects counts transports established after the first one. Climbing against a
+	// healthy Redis is the M8 signature — eviction for a slow subscriber, not an unstable
+	// server (docs/09-internals.md §5). GET /ready reports it as bus_reconnects, which is
+	// the only place an operator can see it.
 	Reconnects uint64
 
-	// Subscriptions is the number of channels currently subscribed upstream, for
-	// st_bus_subscriptions_current, whose value FR-10's acceptance criterion names.
+	// Subscriptions is the number of channels currently subscribed upstream, the count
+	// FR-10's acceptance criterion names.
 	Subscriptions int
 
 	// IntakeDepth is the number of messages queued between the reader and the dispatch
-	// workers, for st_bus_intake_depth. Sustained non-zero means the workers are behind
-	// the reader.
+	// workers. Sustained non-zero means the workers are behind the reader.
 	IntakeDepth int
 
-	// Dropped counts messages discarded because the intake was full, for
-	// st_messages_dropped_total{reason="intake"}. See Receive on each implementation for
-	// why a full intake drops rather than blocks.
+	// Dropped counts messages discarded because the intake was full. See Receive on each
+	// implementation for why a full intake drops rather than blocks.
 	Dropped uint64
 }
 
 // HealthReporter is a Bus that reports the state of its transport.
 //
 // It is deliberately not part of Bus: Bus is the frozen delivery surface, and readiness
-// is a separate concern that only the admin listener and the metrics collector need. Both
-// implementations here satisfy it, so a caller may type-assert without a fallback.
+// is a separate concern that only the /ready handler needs. Both implementations here
+// satisfy it, so a caller may type-assert without a fallback.
 type HealthReporter interface {
 	Bus
 

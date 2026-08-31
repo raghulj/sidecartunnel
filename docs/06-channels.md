@@ -49,17 +49,18 @@ What does not work, and why:
 
 - **Encoded or hashed names.** An earlier version of a system I ran used
   `base64(path)` as the channel name. It bought nothing — a name is not a secret, grants
-  are what protect a channel — and it cost every ability to read a log, group a metric, or
-  answer "who is subscribed to what" during an incident. Human-readable, always.
+  are what protect a channel — and it cost every ability to read a log or answer "who is
+  subscribed to what" during an incident. Human-readable, always.
 - **Nesting identifiers without a separator**, e.g. `org42alerts`. Nothing can be granted
   as a prefix without ambiguity.
-- **Putting anything secret in the name.** Names appear in logs, metrics labels, and the
-  admin API by design.
+- **Putting anything secret in the name.** Names appear in logs by design.
 
-Cardinality is worth a thought before shipping: channel names become metric labels, so a
-namespace with one channel per user and 200,000 users will hurt Prometheus. Namespaces are
-labelled; individual channels are not, except in the admin API. That is the reason for the
-split.
+Cardinality was worth a thought when channel names were metric labels — a namespace with
+one channel per user and 200,000 users would have hurt Prometheus. That hazard is gone:
+nothing aggregates by namespace any more. Names still appear in logs, one line per
+subscribe and one per unsubscribe (`04-integration.md` §2), so the rule above still holds
+— a channel name is not a place to put anything you would not want captured in a log
+line.
 
 ## 3. Namespaces
 

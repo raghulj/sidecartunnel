@@ -20,8 +20,10 @@ EXPOSE 8000
 ENTRYPOINT ["/sidecartunnel"]
 ```
 
-`EXPOSE 9001` is deliberately absent: `docker run -P` publishes every exposed port, and
-the admin listener defaults to loopback precisely so it cannot be reached from outside.
+One port, and one listener behind it: the websocket endpoint, `GET /health` and
+`GET /ready`. There used to be a second listener on `:9001` carrying an operator API, kept
+off the network by binding loopback; it is gone along with the API it was protecting
+(`12-roadmap.md` §2).
 
 No shell is deliberate. This process holds every connected user's session cookie in memory
 (`05-authorization.md` §8); it should be as hard to introspect from inside as it is easy to
@@ -60,8 +62,12 @@ Nginx needs the upgrade headers set explicitly and `proxy_read_timeout` raised a
 ping interval; that omission is the single most common cause of "it disconnects every 60
 seconds".
 
-The admin listener on `:9001` is never published. It is reachable from the internal
-network only.
+Forward the websocket path and nothing else. `GET /health` and `GET /ready` share the
+listener, and a proxy that forwards `/` to the gateway publishes both. They say only "this
+process is up" and "this process can reach Redis" — which is what a load balancer needs,
+and what every health endpoint on the internet already says — so publishing them is not a
+disclosure. It is still not the intent, and a `handle /ws*` rule keeps it from happening by
+accident.
 
 ## 3. Compose and Swarm
 
@@ -88,14 +94,18 @@ services:
 zero replicas, so reconnecting clients always find somewhere to land.
 
 The healthcheck runs the binary in a subcommand rather than shelling out to curl, because
-the image has no shell and no curl.
+the image has no shell and no curl. It performs a loopback `GET /health` against
+`server.listen` and exits 0 or 1. Liveness only, and never the bus: a bus-dependent
+healthcheck restarts every container during a Redis restart, which turns an eight-second
+blip into a full outage. The same rule is why `/ready` must never be a liveness probe — see
+`README.md`'s Health Checks section for the Kubernetes pair.
 
 **Raise Redis's pub/sub output buffer limit.** The default —
 `client-output-buffer-limit pubsub 32mb 8mb 60` — will disconnect the gateway during a
 broadcast burst, and the resulting resubscribe leaves it immediately behind again. The
-oscillation is stable, not transient, and presents as `st_bus_reconnects_total` climbing
-against a Redis that looks perfectly healthy. Set it generously (`256mb 64mb 60`) and watch
-`st_bus_intake_depth`.
+oscillation is stable, not transient, and presents as `bus_reconnects` on `/ready` climbing
+against a Redis that looks perfectly healthy. Set it generously (`256mb 64mb 60`), and raise
+`bus.dispatch_workers` if the workers are falling behind the reader.
 
 Use a dedicated Redis database index. Sharing one with a cache means someone's `FLUSHDB`
 takes realtime down with it — pub/sub is unaffected by `FLUSHDB`, but the surrounding
@@ -129,93 +139,162 @@ Three controls, in order of effect:
 Rehearse it: kill a replica in staging with realistic connection counts and watch the
 application's request queue. The failure mode is not subtle once you have seen it.
 
-## 5. Metrics
+## 5. Observability
 
-Prometheus on `/metrics`.
+There is no metrics endpoint. Prometheus was cut from this project deliberately, and
+`12-roadmap.md` §2 records why: eighteen families were specified before any code existed,
+nine of them ended up with no producer at all and sat permanently at zero, and a gauge
+reading zero because nothing increments it is indistinguishable from one reading zero
+because nothing is wrong. An alert written against a family in that second group never
+fires, and the conclusion drawn from its silence is the opposite of the truth.
 
-| Metric | Type | Labels | Watch for |
-|---|---|---|---|
-| `st_connections_current` | gauge | app | Capacity, and a cliff during deploys |
-| `st_connections_total` | counter | app, result | `result="origin_rejected"` climbing = probing or a misconfigured origin |
-| `st_connection_duration_seconds` | histogram | app | A drop in median = something reaping sockets, usually a proxy timeout |
-| `st_subscriptions_current` | gauge | app, namespace | |
-| `st_messages_published_total` | counter | app, namespace | |
-| `st_messages_delivered_total` | counter | app, namespace | Ratio to published = average fan-out |
-| `st_messages_dropped_total` | counter | reason | `oversize`, `malformed`, `no_subscriber`, `intake` — the last means the bus intake channel filled and the reader dropped rather than blocking, which is the M8 behaviour and a sign the dispatch workers are behind |
-| `st_webhook_duration_seconds` | histogram | app, status | The app's auth latency, which drives §4 |
-| `st_webhook_inflight` | gauge | app | Sitting at the cap = storm in progress |
-| `st_webhook_requests_total` | counter | app, status | 401 rate = revocations or a broken session |
-| `st_bus_subscriptions_current` | gauge | | Should track distinct active channels |
-| `st_bus_reconnects_total` | counter | | Climbing with a healthy Redis = output-buffer eviction, §3 |
-| `st_bus_intake_depth` | gauge | | Sustained non-zero = dispatch workers behind the bus reader |
-| `st_bus_sync_failures_total` | counter | | Reconciler cannot reach Redis; channels may be locally held but not subscribed |
-| `st_origin_rejected_total` | counter | | Probing, or a misconfigured allowlist |
-| `st_control_rejected_total` | counter | reason | Unsigned or stale control messages |
-| `st_slow_consumer_disconnects_total` | counter | app | Sustained non-zero = `outbound_queue` too small, or genuinely bad clients |
-| `st_subscribe_denied_total` | counter | app, namespace | A spike = a client bug, or someone probing |
+There is no operator API either. It went in the same change and for a related reason: the
+separate loopback listener existed so that a proxy misconfiguration could not expose
+`GET /channels` publicly, which defends against a configuration mistake rather than an
+attacker, and it cost a package, an HTTP server, two configuration keys and a credential.
+`POST /disconnect` was a second door onto the control channel's disconnect action.
+`GET /channels` was a convenience over grepping a log this process already writes.
 
-The `app` label is `app.name` and is constant for the process; it is attached once, at
-construction, not passed at each call site. The `namespace` label is the namespace block
-that governs the channel, never the channel itself — `room-4410` is labelled
-`namespace="room"`. A channel whose namespace has no block and for which no reserved `""`
-block is configured is labelled `namespace="_other"` rather than by its own name. That
-fold matters on `st_subscribe_denied_total`, which is the one family a client can drive:
-a client subscribing to `probe1-x`, `probe2-x`, … would otherwise mint a time series per
-attempt, which is the cardinality failure `06-channels.md` §2 describes, available on
-demand to anyone who can open a socket. `_other` cannot collide with a real namespace
-because a channel beginning `_` is reserved and refused (`06-channels.md` §4).
+What is left is smaller and honest: the structured logs of §6, and two probes.
 
-Alert on: `st_bus_reconnects_total` increasing, `st_webhook_inflight` at cap for more than
-a minute, `st_slow_consumer_disconnects_total` rate above baseline,
-`st_connections_current` dropping sharply outside a deploy.
+### 5.1 The Probes
+
+Two routes, on `server.listen`, alongside the websocket endpoint. Everything else is 404.
+
+| Route | Auth | Answers |
+|---|---|---|
+| `GET /health` | none | Is the process alive. Never consults the bus |
+| `GET /ready` | none | Is this replica taking traffic: 503 while draining, and 503 once the bus has been down longer than `bus.ready_grace` |
+
+Neither carries a credential, and neither needs one. They report that the process is up and
+that it can reach Redis — the two facts a load balancer is asking for, and the two facts
+every health endpoint on the internet already publishes. §2's routing rule keeps them off
+the public listener anyway, but that is defence in depth and not the reason they are safe.
+
+`GET /ready` carries four fields beyond the status code:
+
+```json
+{"ready":true,"bus_connected":true,"bus_down_for_seconds":0,"bus_reconnects":0,"draining":false}
+```
+
+`bus_reconnects` is cumulative for the life of the process, so it is read by curling twice
+and comparing. Climbing while `bus_connected` is `true` is pub/sub output-buffer eviction
+and nothing else — see §7. `draining` separates "this replica is going away" from "this
+replica cannot reach Redis", which are the same status code and very different incidents.
+
+### 5.2 What To Watch
+
+| Question | Where to look |
+|---|---|
+| Is the fleet losing connections? | Rate of `connection closed` in the log, grouped by `code` |
+| Is a deploy about to take the application down? | Rate of `connected`, against §4's model |
+| Is the application refusing everyone? | `connect refused by the application` with `status` 401 |
+| Is Redis evicting this replica? | `bus_reconnects` on `/ready`, sampled a minute apart |
+| Is this replica out of the load balancer? | The `/ready` status code |
+| Is anybody subscribed to the channel being published? | `grep '"msg":"subscribe"'` for the channel name |
+| Where is this user, and on which replica? | `client` in the logs, joined across the connection's lines |
 
 ## 6. Logs
 
-JSON, one line per event. Never a cookie, an `Authorization` header, a webhook body, or a
-message payload (NFR-7).
+JSON, one line per event, on stderr. Never a cookie, an `Authorization` header, a webhook
+body, or a message payload (NFR-7).
 
 ```json
-{"level":"info","event":"conn.open","app":"main","client":"8f2c1e04a7b3d915","user":"u-7","origin":"https://app.example.com"}
-{"level":"warn","event":"conn.slow","client":"8f2c1e04a7b3d915","queue":256,"channel":"room-4410"}
-{"level":"warn","event":"origin.rejected","origin":"https://evil.example","ip":"203.0.113.9"}
+{"time":"...","level":"INFO","msg":"connected","client":"8f2c1e04a7b3d915","user":"u-7","subs":3}
+{"time":"...","level":"INFO","msg":"subscription withdrawn","client":"8f2c1e04a7b3d915","channel":"room-4410","reason":"revoked"}
+{"time":"...","level":"INFO","msg":"connection closed","client":"8f2c1e04a7b3d915","code":3005,"reason":"slow consumer"}
+{"time":"...","level":"WARN","msg":"origin rejected","origin":"https://evil.example","remote":"203.0.113.9:52104"}
+{"time":"...","level":"WARN","msg":"control message rejected","reason":"stale","err":"..."}
 ```
 
-The client id is the join key across every line for a connection, and the thing to ask
-for when someone reports a problem.
+**`client` is the join key.** Every line a connection produces carries it, from the
+`connected` that opens it to the `connection closed` that ends it. It is the thing to ask
+for when someone reports a problem, and it is what the control channel's disconnect action
+targets (`04-integration.md` §3), so a line in the log is directly actionable.
+
+The lines worth building a query on:
+
+| Message | Level | Fields | Means |
+|---|---|---|---|
+| `connected` | info | `client`, `user`, `subs` | A handshake completed. The rate is the connect rate; a spike outside a deploy is §4 |
+| `subscribe` | info | `client`, `channel` | One channel is now held by one connection, whether it arrived on the connect frame or as its own command. This is what replaced `GET /channels` |
+| `unsubscribe` | info | `client`, `channel` | The client gave a channel up |
+| `connection closed` | info | `client`, `code`, `reason` | Group by `code`: `3005` slow consumer, `3004` ping timeout, `3000` drain, `3501` revocation, `3503` expiry |
+| `subscription withdrawn` | info | `client`, `channel`, `reason` | A grant stopped covering a channel the connection held |
+| `origin rejected` | warn | `origin`, `remote` | Probing, or a missing entry in `server.allowed_origins` |
+| `connect refused by the application` | info | `client`, `status` | The application said no. A 401 rate that jumps after a deploy is §7 |
+| `connect webhook unavailable` | error | `status`, `err` | The application could not answer. Closes 3008, retryable |
+| `connect webhook rejected the gateway's request` | error | `status` | A 403: wrong `app.webhook_secrets`, or a skewed clock. Rate-limited, so one line stands for many |
+| `bus.dispatch dropped a message` | debug | `channel`, `err` | A published envelope did not decode. The channel is there; the payload deliberately is not |
+| `control message rejected` | warn | `reason` | `unsigned`, `stale` or `malformed` — three different people to talk to (`04-integration.md` §3) |
+| `sidecartunnel started` | info | `server.listen`, `server.path`, `bus.kind`, `namespaces` | The configuration that actually took effect, once per process |
+
+`bus.dispatch dropped a message` needs `log.level: debug`. Everything else above is at info
+or higher.
 
 ## 7. Runbook
 
 **Clients disconnect every N seconds, N ≈ 60.** A proxy idle timeout below
-`ping_interval`. Check §2. `st_connection_duration_seconds` will show a suspiciously tight
-median.
+`ping_interval`. Check §2. The signature in the log is a population of `connection closed`
+lines whose gap from their matching `connected` line clusters tightly around one value —
+real disconnects are spread out, a proxy timeout is not.
 
 **Nobody receives anything, connections are fine.** Check `/ready` — if the bus is down,
 connections stay open and silent by design (NFR-8). Then check the channel name: the
-publisher's key must be `{bus.prefix}{channel}` exactly. `GET /channels` on the admin API
-tells you what the gateway thinks is subscribed. This is the failure mode Redis publishing
-buys us, and it is why that endpoint exists.
+publisher's key must be `{bus.prefix}{channel}` exactly.
+
+Then ask the gateway what it thinks is subscribed. Every subscribe is a log line carrying
+the channel:
+
+```
+grep '"msg":"subscribe"' gateway.log | grep room-4410
+```
+
+Nothing back, on any replica, while the publisher believes otherwise, is the bug — and it
+is almost always the prefix or the separator. Subtract the `unsubscribe` and
+`connection closed` lines for the same `client` values to see who still holds it.
+
+This is the failure mode Redis publishing buys us: the application publishes straight to
+Redis and gets no acknowledgement, so a message that reached nobody is indistinguishable
+from one that reached ten thousand sockets. The log is the only place that difference is
+visible.
 
 **Some users receive, others do not.** Almost always `bus.kind: memory` with more than one
-replica. The startup warning will be in the logs.
+replica. The startup warning is in the logs: grep for `bus.kind is memory`.
 
-**`st_bus_reconnects_total` climbing, Redis healthy.** Pub/sub output buffer eviction.
-Raise `client-output-buffer-limit pubsub` (§3) and check `st_bus_intake_depth`. The obvious
-reading — "unstable Redis" — points at the wrong system.
+**`/ready` shows `bus_reconnects` climbing while `bus_connected` is true.** Pub/sub
+output-buffer eviction, not an unstable Redis. Raise `client-output-buffer-limit pubsub`
+(§3), and raise `bus.dispatch_workers` if the workers are behind the reader. The obvious
+reading — "Redis is flapping" — points at the wrong system, which is what makes this one
+worth naming.
 
-**A channel is locally subscribed but receives nothing, and `/ready` is 200.** Check
-`st_bus_sync_failures_total`. The reconciler retries, so this should clear; if it does not,
-Redis is refusing subscriptions.
+**A channel is locally subscribed but receives nothing, and `/ready` is 200.** A
+reconciliation is failing, leaving the channel held locally and dead upstream. The
+reconciler retries, so it should clear on its own; if it does not, Redis is refusing
+subscriptions. The diagnosis is a disagreement between two sources: the replica's log has a
+`subscribe` line for the channel with no matching `unsubscribe`, while
+`redis-cli PUBSUB CHANNELS '{bus.prefix}*'` does not list it.
 
 **Application falls over on deploy.** §4.
 
-**`st_slow_consumer_disconnects_total` climbing.** Either `outbound_queue` is too small for
-the message rate, or a genuine population of bad connections. Check whether the same
-clients recur; if the rate scales with publish volume rather than client count, raise the
-queue.
+**Connections closing with code 3005.** Slow consumers. Grep for
+`"msg":"connection closed"` with `"code":3005` and group by `client`. If a handful of
+clients recur, it is those clients. If the set is broad and the rate scales with publish
+volume rather than with connection count, `limits.outbound_queue` is too small — raise it,
+remembering that the queue holds pointers into one shared buffer, so the cost is about
+4 KiB per connection rather than depth times message size (§8).
 
-**401s from the webhook after a deploy.** The application is returning 401 where it means
-500 — most often a session backend that is not up yet. That combination locks users out
-with `reconnect: false`, so it is worth a specific check (`04-integration.md` §1.3).
+**Revoking one user's access, right now.** Publish a signed disconnect on the control
+channel (`04-integration.md` §3). That is the only route: the admin API's `POST /disconnect`
+was a second door onto the same hub call and went with the rest of the listener. The control
+channel is the better one anyway — it is signed, it reaches every replica rather than the
+one being curled, and it flushes the connect-webhook cache so a revoked user cannot
+reconnect on a cached grant.
+
+**401s from the webhook after a deploy.** Grep for `connect refused by the application`
+with `"status":401`. The application is returning 401 where it means 500 — most often a
+session backend that is not up yet. That combination locks users out with
+`reconnect: false`, so it is worth a specific check (`04-integration.md` §1.3).
 
 ## 8. Capacity
 

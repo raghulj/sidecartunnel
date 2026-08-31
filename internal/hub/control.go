@@ -277,3 +277,28 @@ func orDefault(s, fallback string) string {
 	}
 	return s
 }
+
+// Disconnect closes every connection matching exactly one of user and client, and returns
+// how many it closed. It is the control channel's disconnect action reached directly, and
+// it has exactly that effect: proto.CloseRevoked, reconnect false (FR-18,
+// docs/04-integration.md §3).
+//
+// Both targets are matched exactly, never as globs: a target of "u-*" reaches the
+// connection literally named that and nothing else (C8). Naming neither is
+// ErrNoTarget and naming both is ErrAmbiguousTarget — an omitted target is a validation
+// error and not "everyone", because treating it as everyone means one request forces
+// every connection on the replica to re-authorize at once, which is the outage
+// docs/10-operations.md §4 models.
+//
+// A target held by no connection on this replica is not an error; it closes nothing and
+// returns zero. It must not be called while holding the hub lock, because closing
+// deregisters (docs/09-internals.md §4.5), and it is safe to call concurrently.
+func (h *Hub) Disconnect(user, client string) (int, error) {
+	c := Control{Action: ActionDisconnect, User: user, Client: client}
+	if _, err := c.validate(); err != nil {
+		return 0, err
+	}
+	targets := h.targets(c)
+	h.closeAll(targets, proto.CloseRevoked, revokedReason)
+	return len(targets), nil
+}

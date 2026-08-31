@@ -44,14 +44,10 @@ services:
       # needs the YAML file or this. With neither, a built-in default block catches
       # every channel and subscribes still succeed.
       ST_NAMESPACES_JSON: '[{"name":"room"},{"name":"user"},{"name":"org"}]'
-      # Loopback by default and never published. The compose network can reach it;
-      # `docker compose port` cannot.
-      ST_ADMIN__LISTEN: "0.0.0.0:9001"
-      ST_ADMIN__TOKEN: "${ST_ADMIN_TOKEN}"
       ST_LOG__LEVEL: "debug"
     depends_on: [redis]
-    # No ports: block. EXPOSE 9001 is deliberately absent from the gateway image, and
-    # publishing the admin listener would undo that.
+    # No ports: block. The websocket is reached through the caddy proxy above, same-origin
+    # with the application; nothing needs to publish this service's own port.
 
   redis:
     image: redis:7-alpine

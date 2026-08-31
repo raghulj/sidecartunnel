@@ -262,3 +262,146 @@ func TestControl_ParsedMessageApplies(t *testing.T) {
 		t.Fatalf("close code = %d, want %d", got.code, proto.CloseRevoked)
 	}
 }
+
+// TestDisconnect_ByUserAndByClient_FR18 is Hub.Disconnect reached directly: the same
+// effect as the control action, closing with 3501 and reconnect false.
+func TestDisconnect_ByUserAndByClient_FR18(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t, newBus())
+
+	one := newSink("c1", "u-7")
+	two := newSink("c2", "u-7")
+	other := newSink("c3", "u-8")
+	for _, s := range []*fakeSink{one, two, other} {
+		mustAdd(t, h, s)
+		mustSubscribe(t, h, s, "room-1")
+	}
+
+	closed, err := h.Disconnect("u-7", "")
+	if err != nil {
+		t.Fatalf("Disconnect(user) = %v", err)
+	}
+	if closed != 2 {
+		t.Fatalf("Disconnect(u-7) closed %d, want 2", closed)
+	}
+	for _, s := range []*fakeSink{one, two} {
+		if got := s.waitClose(t); got.code != proto.CloseRevoked {
+			t.Fatalf("sink %s closed with %d, want %d", s.id, got.code, proto.CloseRevoked)
+		}
+	}
+	if other.closeCount() != 0 {
+		t.Fatal("Disconnect(u-7) closed a connection belonging to another user")
+	}
+
+	closed, err = h.Disconnect("", "c3")
+	if err != nil {
+		t.Fatalf("Disconnect(client) = %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("Disconnect(c3) closed %d, want 1", closed)
+	}
+	other.waitClose(t)
+}
+
+// TestDisconnect_TargetsAreExactNeverGlobs_C8 is the row that matters: a target of "u-*"
+// reaches the connection literally named that and nothing else.
+func TestDisconnect_TargetsAreExactNeverGlobs_C8(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t, newBus())
+	s := newSink("c1", "u-7")
+	mustAdd(t, h, s)
+
+	closed, err := h.Disconnect("u-*", "")
+	if err != nil {
+		t.Fatalf("Disconnect = %v", err)
+	}
+	if closed != 0 {
+		t.Fatalf("Disconnect(u-*) closed %d connections; targets are exact, never globs (C8)", closed)
+	}
+	if s.closeCount() != 0 {
+		t.Fatal("a glob target reached a connection it does not name (C8)")
+	}
+}
+
+// TestDisconnect_Validation refuses the same targeting mistakes the control channel does.
+// An omitted target is a validation error and not "everyone" (C8).
+func TestDisconnect_Validation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		user   string
+		client string
+		want   error
+	}{
+		{"no target", "", "", ErrNoTarget},
+		{"both targets", "u-7", "c1", ErrAmbiguousTarget},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestHub(t, newBus())
+			closed, err := h.Disconnect(tt.user, tt.client)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Disconnect(%q, %q) = %v, want %v", tt.user, tt.client, err, tt.want)
+			}
+			if closed != 0 {
+				t.Fatalf("Disconnect closed %d connections on a refused target", closed)
+			}
+		})
+	}
+}
+
+// TestRegister_UserIndexFollowsAuthorization_FR18 is the case the whole control surface
+// turns on and the one no other test here covers: a connection is registered *before* the
+// application has answered, so Sink.User is empty at Add and only becomes the real user id
+// by the time Attach runs (docs/09-internals.md §3, internal/server's handler).
+//
+// Indexing it once at Add leaves it filed under "" forever. A control disconnect naming
+// its real user then reaches nothing — revocation silently does nothing, which is the
+// worst possible way for a security control to fail — and Remove, which deletes under the
+// current user id, leaves the connection in the "" bucket for the life of the process.
+func TestRegister_UserIndexFollowsAuthorization_FR18(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t, newBus())
+
+	s := newSink("c1", "")
+	mustAdd(t, h, s)
+
+	// The application answers, and the connection learns who it is.
+	s.user = "u-7"
+	h.Attach(s, []string{"room-1"}, func([]string) *proto.Frame { return nil })
+
+	closed, err := h.Disconnect("u-7", "")
+	if err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("Disconnect(u-7) closed %d; the connection is still filed under the empty "+
+			"user it was registered with, so revocation reaches nothing (FR-18)", closed)
+	}
+	if got := s.waitClose(t); got.code != proto.CloseRevoked {
+		t.Fatalf("close code = %d, want %d", got.code, proto.CloseRevoked)
+	}
+}
+
+// TestRemove_LeavesNoUserIndexEntry_NFR3 is the other half of the same defect: Remove
+// deletes under the connection's current user id, so a connection filed under a different
+// one stays in the map after it is gone. That is an unbounded leak of one map entry and
+// one dead Sink per connection, on a process meant to run for weeks.
+func TestRemove_LeavesNoUserIndexEntry_NFR3(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t, newBus())
+
+	s := newSink("c1", "")
+	mustAdd(t, h, s)
+	s.user = "u-7"
+	h.Attach(s, nil, func([]string) *proto.Frame { return nil })
+	h.Remove(s)
+
+	h.mu.RLock()
+	users := len(h.users)
+	h.mu.RUnlock()
+	if users != 0 {
+		t.Fatalf("the user index holds %d entries after Remove, want 0 (NFR-3)", users)
+	}
+}

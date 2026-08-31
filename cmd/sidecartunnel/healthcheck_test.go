@@ -11,10 +11,10 @@ import (
 	"github.com/raghulj/sidecartunnel/internal/config"
 )
 
-// TestHealthURL covers the address forms admin.listen legitimately takes. A wildcard host
+// TestHealthURL covers the address forms server.listen legitimately takes. A wildcard host
 // is not an address to connect to, and the probe is always loopback: it runs inside the
-// container it is checking, and the admin listener defaults to loopback precisely so
-// nothing outside can reach it.
+// container it is checking, so it is asking whether this process is alive rather than
+// whether the network can reach it.
 func TestHealthURL(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -22,22 +22,22 @@ func TestHealthURL(t *testing.T) {
 		want   string
 		errs   bool
 	}{
-		{"loopback", "127.0.0.1:9001", "http://127.0.0.1:9001/health", false},
-		{"every interface, short form", ":9001", "http://127.0.0.1:9001/health", false},
-		{"every interface, long form", "0.0.0.0:9001", "http://127.0.0.1:9001/health", false},
-		{"every interface, v6", "[::]:9001", "http://127.0.0.1:9001/health", false},
-		{"a named host", "sidecartunnel:9001", "http://sidecartunnel:9001/health", false},
-		{"no port at all", "9001", "", true},
+		{"loopback", "127.0.0.1:8000", "http://127.0.0.1:8000/health", false},
+		{"every interface, short form", ":8000", "http://127.0.0.1:8000/health", false},
+		{"every interface, long form", "0.0.0.0:8000", "http://127.0.0.1:8000/health", false},
+		{"every interface, v6", "[::]:8000", "http://127.0.0.1:8000/health", false},
+		{"a named host", "sidecartunnel:8000", "http://sidecartunnel:8000/health", false},
+		{"no port at all", "8000", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := healthURL(tt.listen)
 			if tt.errs {
 				if err == nil {
-					t.Fatalf("healthURL(%q) = %q, nil; want an error naming admin.listen", tt.listen, got)
+					t.Fatalf("healthURL(%q) = %q, nil; want an error naming server.listen", tt.listen, got)
 				}
-				if !strings.Contains(err.Error(), "admin.listen") {
-					t.Fatalf("healthURL error = %q, want it to name admin.listen (NFR-5)", err)
+				if !strings.Contains(err.Error(), "server.listen") {
+					t.Fatalf("healthURL error = %q, want it to name server.listen (NFR-5)", err)
 				}
 				return
 			}
@@ -81,12 +81,12 @@ func TestHealthcheck_Answers(t *testing.T) {
 		{"a running instance", strings.TrimPrefix(ok.URL, "http://"), exitOK, ""},
 		{"an instance answering 503", strings.TrimPrefix(unwell.URL, "http://"), exitFailure, "503"},
 		{"nothing listening", deadAddr, exitFailure, "connect"},
-		{"an unusable admin.listen", "9001", exitFailure, "admin.listen"},
+		{"an unusable server.listen", "8000", exitFailure, "server.listen"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
-			cfg := &config.Config{Admin: config.Admin{Listen: tt.listen}}
+			cfg := &config.Config{Server: config.Server{Listen: tt.listen}}
 			if got := healthcheck(context.Background(), cfg, &stderr); got != tt.want {
 				t.Fatalf("healthcheck = %d, want %d (stderr %q)", got, tt.want, stderr.String())
 			}
@@ -98,13 +98,13 @@ func TestHealthcheck_Answers(t *testing.T) {
 }
 
 // TestHealthcheck_AgainstARunningGateway is the subcommand doing its actual job: a
-// loopback probe of a live admin listener, which is what the distroless image's
+// loopback probe of a live gateway on server.listen, which is what the distroless image's
 // HEALTHCHECK runs (docs/10-operations.md §3).
 func TestHealthcheck_AgainstARunningGateway(t *testing.T) {
 	f := newFixture(t, grant{user: "u-7", expiresIn: 3600}, nil)
 	f.start(t)
 
-	f.cfg.Admin.Listen = f.adminLn.Addr().String()
+	f.cfg.Server.Listen = f.clientLn.Addr().String()
 	var stderr bytes.Buffer
 	if got := healthcheck(context.Background(), f.cfg, &stderr); got != exitOK {
 		t.Fatalf("healthcheck against a running gateway = %d, want %d (stderr %q)", got, exitOK, stderr.String())
@@ -112,15 +112,15 @@ func TestHealthcheck_AgainstARunningGateway(t *testing.T) {
 }
 
 // TestHealthcheck_NeverConsultsTheBus_FR20 is the rule the whole subcommand exists to
-// keep. The bus is torn out from under a live gateway and /health still answers 200, so
-// a Redis restart cannot restart the fleet.
+// keep. The replica is put into the strongest not-ready state it has and /health still
+// answers 200, so a Redis restart cannot restart the fleet.
 func TestHealthcheck_NeverConsultsTheBus_FR20(t *testing.T) {
 	f := newFixture(t, grant{user: "u-7", expiresIn: 3600}, nil)
 	f.start(t)
-	f.cfg.Admin.Listen = f.adminLn.Addr().String()
+	f.cfg.Server.Listen = f.clientLn.Addr().String()
 
 	// Draining is the strongest not-ready this process can report; /health is indifferent.
-	f.readiness.drain()
+	f.server.StopAccepting()
 
 	var stderr bytes.Buffer
 	if got := healthcheck(context.Background(), f.cfg, &stderr); got != exitOK {

@@ -168,7 +168,7 @@ func TestDispatch_UnprefixedKeyReachesNobody_FR21(t *testing.T) {
 }
 
 // TestParseEnvelope_Malformed drops what docs/04-integration.md §2.2 says to drop. The
-// caller counts st_messages_dropped_total{reason="malformed"} from the error.
+// caller drops the message and logs the channel, never the payload.
 func TestParseEnvelope_Malformed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

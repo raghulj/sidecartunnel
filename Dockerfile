@@ -43,14 +43,20 @@ COPY --from=build /sidecartunnel /sidecartunnel
 
 USER nonroot:nonroot
 
-# The websocket listener, and only the websocket listener. `EXPOSE 9001` is deliberately
-# absent: `docker run -P` publishes every exposed port, and admin.listen defaults to
-# loopback precisely so it cannot be reached from outside (docs/10-operations.md §1).
+# One listener, carrying the websocket endpoint, GET /health and GET /ready. The second
+# listener this image used to keep off the network is gone along with the operator API it
+# was carrying (docs/12-roadmap.md §2).
 EXPOSE 8000
 
-# The binary checks itself. There is no shell and no curl in this image, and a
-# bus-dependent healthcheck would kill the whole fleet during a Redis restart, so the
-# subcommand tests liveness only (docs/08-config.md §1, docs/04-integration.md §4).
+# The binary checks itself, and that is the whole reason `healthcheck` is a subcommand:
+# this is distroless static, with no shell and no curl in it, so the only executable
+# available to probe the process is the process. Exec form, not string form — there is no
+# /bin/sh here to parse a string.
+#
+# It performs a loopback GET /health against server.listen. Liveness only: /health never
+# consults the bus, because a bus-dependent healthcheck restarts every container during a
+# Redis restart and turns an eight-second blip into a full outage
+# (docs/08-config.md §1, docs/10-operations.md §5).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/sidecartunnel", "healthcheck"]
 

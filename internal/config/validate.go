@@ -17,15 +17,13 @@ const (
 	maxMessageBytes = 1 << 20
 	minSecretBytes  = 32
 	maxPort         = 65535
-
-	// wildcardHost is the normalized form of a listen host that binds every interface.
-	// admin.listen "127.0.0.1:9001" and server.listen ":9001" are the same socket, and a
-	// plain string comparison of the two would miss it.
-	wildcardHost = "*"
 )
 
-// validateServer checks docs/08-config.md §3's server table. server.listen is checked in
-// validateListeners, which needs admin.listen in scope as well.
+// validateServer checks docs/08-config.md §3's server table, including server.listen.
+//
+// server.listen used to be checked elsewhere, paired against a second listen address and a
+// rule that the two had to be different sockets. There is one listener now
+// (docs/12-roadmap.md §2), so the check belongs with the rest of the server table.
 func validateServer(s *Server) error {
 	if s.Path == "" || !strings.HasPrefix(s.Path, "/") {
 		return fmt.Errorf("server.path is %q, which must begin with %q (FR-1)", s.Path, "/")
@@ -68,7 +66,7 @@ func validateServer(s *Server) error {
 			return fmt.Errorf("server.trusted_proxies[%d] %q is not a CIDR: %w", i, cidr, err)
 		}
 	}
-	return nil
+	return validateListen("server.listen", s.Listen)
 }
 
 // validateOrigin enforces exact origins. No wildcards and no suffix matching: browsers do
@@ -102,7 +100,7 @@ func validateOrigin(origin string) error {
 // (NFR-7): a length is reported, never a value.
 func validateApp(a *App) error {
 	if a.Name == "" {
-		return errors.New("app.name is empty; it labels every metric and log line (docs/08-config.md §3)")
+		return errors.New("app.name is empty; it labels every log line (docs/08-config.md §3)")
 	}
 	if a.ConnectURL == "" {
 		return errors.New("app.connect_url is required; there is no authorization without it (FR-3)")
@@ -332,45 +330,22 @@ func validateControl(c *Control) error {
 	return durNonNegative("control.refresh_spread", c.RefreshSpread)
 }
 
-// validateListeners checks both listen addresses and the rule that they differ.
+// validateListen checks that addr is a usable host:port, naming key on failure.
 //
-// They are checked together because "differ" is not a string comparison: server.listen
-// ":9001" and admin.listen "127.0.0.1:9001" are the same socket, and the admin listener
-// silently failing to bind is how an operator loses /metrics without noticing
-// (docs/08-config.md §3).
-func validateListeners(serverListen, adminListen string) error {
-	serverHost, serverPort, err := parseListen("server.listen", serverListen)
+// It is one address now. There were two, and a rule that they had to be different sockets,
+// because ":9001" and "127.0.0.1:9001" are the same socket and a plain string comparison
+// would miss it. The second listener is gone (docs/12-roadmap.md §2), so all that is left
+// to check is that the one remaining address can be bound at all.
+func validateListen(key, addr string) error {
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return err
-	}
-	adminHost, adminPort, err := parseListen("admin.listen", adminListen)
-	if err != nil {
-		return err
-	}
-	if serverPort == adminPort && serverPort != "0" &&
-		(serverHost == adminHost || serverHost == wildcardHost || adminHost == wildcardHost) {
-		return fmt.Errorf("admin.listen %q is the same socket as server.listen %q; the operator "+
-			"listener must be separate and is never exposed publicly (docs/08-config.md §3)",
-			adminListen, serverListen)
-	}
-	return nil
-}
-
-// parseListen splits a listen address and normalizes a wildcard host, naming key on
-// failure.
-func parseListen(key, addr string) (host, port string, err error) {
-	host, port, err = net.SplitHostPort(addr)
-	if err != nil {
-		return "", "", fmt.Errorf("%s %q is not a valid listen address: %w", key, addr, err)
+		return fmt.Errorf("%s %q is not a valid listen address: %w", key, addr, err)
 	}
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 0 || number > maxPort {
-		return "", "", fmt.Errorf("%s %q has no valid port; want host:port with a port in 0–%d", key, addr, maxPort)
+		return fmt.Errorf("%s %q has no valid port; want host:port with a port in 0–%d", key, addr, maxPort)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = wildcardHost
-	}
-	return host, port, nil
+	return nil
 }
 
 // validateLog checks docs/08-config.md §3's log table.
