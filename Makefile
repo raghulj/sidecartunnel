@@ -13,7 +13,7 @@ REDIS_IMAGE ?= redis:8-alpine
 .DEFAULT_GOAL := check
 .PHONY: check test cover lint build redis redis-stop integration clean tidy
 
-## check: lint, test and the coverage gate. What CI runs, and what to run before pushing.
+## check: trace lint, test and the coverage gate. What CI runs, and what to run before pushing.
 check: lint test cover
 
 ## test: unit and protocol tests with the race detector.
@@ -79,3 +79,12 @@ tidy:
 ## clean: remove build and coverage artifacts.
 clean:
 	rm -rf bin $(COVERAGE)
+
+# Requirements traceability. Every FR/NFR must be named by a test, or carry a
+# "*Verified:*" line in docs/01-requirements.md saying how it is checked instead.
+# FR-14 shipped unimplemented while every package reported 100% coverage; nothing in
+# the gate could see it, because coverage cannot notice a requirement that never
+# became lines of code.
+.PHONY: trace
+trace:
+	@./scripts/trace.sh

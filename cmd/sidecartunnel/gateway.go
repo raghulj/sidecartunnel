@@ -11,6 +11,7 @@ import (
 
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
+	"github.com/raghulj/sidecartunnel/internal/consumer"
 	"github.com/raghulj/sidecartunnel/internal/hub"
 	"github.com/raghulj/sidecartunnel/internal/server"
 	"github.com/raghulj/sidecartunnel/internal/webhook"
@@ -37,11 +38,16 @@ type gateway struct {
 	cfg *config.Config
 	log *slog.Logger
 
-	bus      bus.HealthReporter
-	hub      *hub.Hub
-	webhook  *webhook.Client
-	server   *server.Server
-	consumer *consumer
+	bus     bus.HealthReporter
+	hub     *hub.Hub
+	webhook *webhook.Client
+	server  *server.Server
+
+	// cons is the bus consumer: the loop joining bus.Receive to hub.Dispatch, the
+	// control-channel routing, and the FR-23 signature check. It lives in
+	// internal/consumer rather than here, so that the integration suite runs the same
+	// code this binary does rather than an equivalent of its own.
+	cons *consumer.Consumer
 
 	// clientLn is bound by build, before anything starts. A bind failure is a startup
 	// error and never a listener that silently is not there: a gateway that runs and
@@ -106,8 +112,15 @@ func build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*gateway,
 		return nil, fmt.Errorf("listen on server.listen %q: %w", cfg.Server.Listen, err)
 	}
 
-	g.consumer = newConsumer(g.bus, g.hub, log,
-		[]byte(cfg.Control.Secret), cfg.Bus.DispatchWorkers, g.webhook.Flush, nil)
+	g.cons = consumer.New(consumer.Options{
+		Bus:            g.bus,
+		Hub:            g.hub,
+		Log:            log,
+		Secret:         []byte(cfg.Control.Secret),
+		Workers:        cfg.Bus.DispatchWorkers,
+		MaxMessageSize: cfg.Limits.MaxMessageSize,
+		Flush:          g.webhook.Flush,
+	})
 
 	built = true
 	return g, nil
@@ -159,7 +172,7 @@ func (g *gateway) serve(ctx context.Context, signals <-chan os.Signal) int {
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
-		g.consumer.run(consumerCtx)
+		g.cons.Run(consumerCtx)
 	}()
 
 	fatal := make(chan error, 1)

@@ -6,10 +6,11 @@ where mistakes turn into intermittent failures that are miserable to reproduce.
 ## 1. Package layout
 
 ```
-cmd/sidecartunnel/     main, wiring, the bus consumer, control verification, healthcheck
+cmd/sidecartunnel/     main, wiring, healthcheck
 internal/bus/          redis and memory transports
 internal/config/       load, defaults, env overlay, validate
 internal/conn/         one connection: two goroutines, grants, commands
+internal/consumer/     the bus consumer: dispatch workers, control routing, FR-23 verification
 internal/glob/         grant pattern matching
 internal/hub/          channel registry, fan-out, reconciler, control
 internal/proto/        frame codec and close codes

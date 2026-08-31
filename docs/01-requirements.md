@@ -107,6 +107,8 @@ channel continue to receive messages throughout.
 **FR-16 — Bounded authorization lifetime.** No connection may act on a grant set older
 than `expires_in`. See FR-22 for the mechanism.
 *Accept:* covered by FR-22.
+*Verified:* by FR-22's tests. This requirement states the property; FR-22 states the
+mechanism, and there is nothing separate to exercise.
 
 **FR-17 — Subscription withdrawal.** When a control-channel `unsubscribe` matches a live
 subscription, the gateway MUST drop it **and** send the client an `unsubscribed` push.
@@ -188,12 +190,17 @@ for a scale nobody asked for and paid for it in the hub (NFR-9).
 bus receipt to socket write SHOULD be under 20 ms. (One replica's full complement on one
 channel is the worst realistic case; the measured cost is a map iteration, roughly 0.2 ms.)
 *Accept:* a load test reports the histogram.
+*Verified:* not yet. The load harness is written and has never been run at scale; this is
+a derivation, not a measurement, and is listed as such in `12-roadmap.md` §4.
 
 **NFR-9 — Simplicity ceiling.** The hub MUST use a single `sync.RWMutex` until a profile
 shows lock contention above 5% of fan-out time. Sharding is a documented later step
 (`09-internals.md` §4), not a starting position.
 *Accept:* a profile at target load, recorded in the release notes. If contention is under
 the threshold, the sharded version MUST NOT be built.
+*Verified:* not yet — it forbids work rather than requiring it, so it is satisfied for as
+long as nobody builds the sharded hub. The profile is owed before that decision, not
+before release.
 
 **NFR-3 — No goroutine leaks.** After 10,000 connect/disconnect cycles, goroutine count
 MUST return to within 5% of baseline.
@@ -215,6 +222,8 @@ naming the offending key. The process MUST NOT start in a partially-configured s
 **NFR-6 — Binary size and base image.** The release image SHOULD be under 20 MB, built
 `FROM scratch` or distroless, running as a non-root user.
 *Accept:* `docker images` output in CI.
+*Verified:* by the release workflow, which builds the image and reports its size. Measured
+at 7.95 MB. Not expressible as a Go test.
 
 **NFR-7 — Secret hygiene.** No cookie, `Authorization` header, webhook body, or message
 payload may appear in logs at any level, including debug.

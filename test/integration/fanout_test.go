@@ -131,7 +131,7 @@ func TestExcludeSuppressesExactlyOneClient(t *testing.T) {
 		t.Fatalf("client ids are %q and %q; each connection must have its own", a.id, b.id)
 	}
 
-	before := c.r(0).cons.dispatched.Load()
+	before := c.r(0).cons.Stats().Dispatched
 	c.publish("room-2", map[string]any{
 		"event":   "message.new",
 		"data":    map[string]any{"marker": "excluded"},
@@ -146,7 +146,7 @@ func TestExcludeSuppressesExactlyOneClient(t *testing.T) {
 	// A's replica has the message too — the exclusion is applied at fan-out, on every
 	// replica, not by withholding the publish.
 	waitFor(t, "the excluded client's replica to receive the message", func() bool {
-		return c.r(0).cons.dispatched.Load() > before
+		return c.r(0).cons.Stats().Dispatched > before
 	})
 
 	c.publish("room-2", event("message.new", map[string]any{"marker": "everyone"}))

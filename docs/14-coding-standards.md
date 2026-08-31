@@ -339,3 +339,23 @@ how budgets stop being budgets (`AGENTS.md` §6).
 Nothing here is skippable with a flag, and none of it should need to be. If a rule is
 costing more than it is worth, the fix is to argue it out and change this document, not to
 route around it in one pull request.
+
+
+## Requirements traceability
+
+Every requirement in `01-requirements.md` must be named by at least one test — the id in
+the test's name or its doc comment — or carry a `*Verified:*` line saying how it is checked
+instead. `scripts/trace.sh` enforces it and `make check` runs it.
+
+This exists because **FR-14 shipped unimplemented while every package reported 100%
+statement coverage.** `limits.max_message_size` was defined, defaulted, validated,
+documented and read by no code at all; envelopes over the cap were delivered. Eleven
+packages, twenty-two commits, and nothing in the gate was capable of noticing, because
+coverage measures whether the lines that exist get executed and cannot see a requirement
+that never became lines.
+
+A test naming a requirement is not proof the requirement is met. It is proof somebody
+thought about it, which is the part that was missing.
+
+Exemptions go beside the requirement in the requirements document, not in a list here — the
+same rule as `// coverage:` comments. A list somewhere else is a place to hide things.

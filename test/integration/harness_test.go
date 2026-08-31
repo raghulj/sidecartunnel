@@ -25,6 +25,7 @@ import (
 
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
+	"github.com/raghulj/sidecartunnel/internal/consumer"
 	"github.com/raghulj/sidecartunnel/internal/hub"
 	"github.com/raghulj/sidecartunnel/internal/server"
 	"github.com/raghulj/sidecartunnel/internal/webhook"
@@ -436,7 +437,7 @@ type replica struct {
 	srv   *server.Server
 	web   *webhook.Client
 	http  *httptest.Server
-	cons  *consumer
+	cons  *busConsumer
 	index int
 
 	drainOnce sync.Once
@@ -495,11 +496,11 @@ func (c *cluster) newReplica(i int, secret string, mutate func(*config.Config)) 
 		web:   web,
 		index: i,
 	}
-	r.cons = startConsumer(t, h, b, c.controlSecret, cfg.Bus.DispatchWorkers)
+	r.cons = startConsumer(h, b, cfg, c.controlSecret, log)
 	r.http = httptest.NewServer(srv.Handler())
 
 	// One cleanup, in one order, because the order is a contract: drain the connections,
-	// stop the listeners, close the bus so the consumer's range ends, wait for it, and
+	// stop the listeners, close the bus so the consumer's workers end, wait for it, and
 	// only then close the hub — hub.Close may not run concurrently with Dispatch.
 	t.Cleanup(func() {
 		r.drain()
@@ -611,123 +612,48 @@ func (r *replica) drain() {
 // bus consumer
 // ---------------------------------------------------------------------------
 
-// consumer is the loop main owns and has not yet been wired: it drains bus.Receive into
-// hub.Dispatch, and routes the control channel to hub.Control on a goroutine of its own.
+// busConsumer is the shipped bus consumer — internal/consumer, the same package
+// cmd/sidecartunnel constructs — with the lifecycle this suite needs wrapped around it.
 //
-// It lives here because internal/ holds no such loop: internal/server assembles
-// connections and internal/hub delivers to them, and what joins the two to the bus is in
-// cmd/sidecartunnel, in package main, which nothing outside that directory can import.
-// That is stated plainly because it matters to what these tests prove — the routing rule
-// below is the suite's own, and only the packages under it are the system under test. The
-// fix is to move the consumer and the control verifier into a package under internal/, so
-// that main and this suite share one implementation rather than two that will drift.
-//
-// The shape is the one docs/09-internals.md §5 requires. Control is taken off the fan-out
-// path so a revocation cannot queue behind the firehose it may exist to stop, and the
-// send onto the control queue is non-blocking so a stalled control handler can never stop
-// delivery.
-type consumer struct {
-	wg sync.WaitGroup
+// It used to be a reimplementation living in this file: the routing rule, the control
+// queue and the FR-23 signature check, written a second time because the originals were
+// in package main and nothing outside that directory could import them. Two
+// implementations of one rule drift, and the copy under test was not the copy that
+// shipped (docs/12-roadmap.md §4). The package moved; this is now a thin wrapper, and
+// what these tests exercise is the delivery path the binary runs.
+type busConsumer struct {
+	*consumer.Consumer
 
-	stop chan struct{}
-
-	// controlRejected counts unsigned, stale or malformed control envelopes, which are
-	// dropped and counted rather than applied (FR-23).
-	controlRejected atomic.Int64
-
-	// dispatched counts messages handed to hub.Dispatch. It is how a test tells "Redis
-	// never sent it" from "the gateway never delivered it", which is the whole diagnosis
-	// in a broadcast burst (M8).
-	dispatched atomic.Int64
-
-	// dispatchErrors counts envelopes the hub refused: not an object, no event, no data.
-	dispatchErrors atomic.Int64
+	stop context.CancelFunc
+	done chan struct{}
 }
 
 // startConsumer starts the dispatch workers and the control goroutine. They end when the
-// bus closes its intake channel.
-func startConsumer(t *testing.T, h *hub.Hub, b bus.Bus, controlSecret string, workers int) *consumer {
-	t.Helper()
-	if workers <= 0 {
-		workers = 2
-	}
-	c := &consumer{stop: make(chan struct{})}
-
-	control := make(chan bus.Message, 64)
-	c.wg.Add(1)
+// bus closes its intake channel, or when wait cancels them.
+func startConsumer(h *hub.Hub, b bus.Bus, cfg *config.Config, controlSecret string, log *slog.Logger) *busConsumer {
+	c := consumer.New(consumer.Options{
+		Bus:            b,
+		Hub:            h,
+		Log:            log,
+		Secret:         []byte(controlSecret),
+		Workers:        cfg.Bus.DispatchWorkers,
+		MaxMessageSize: cfg.Limits.MaxMessageSize,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	bc := &busConsumer{Consumer: c, stop: cancel, done: make(chan struct{})}
 	go func() {
-		defer c.wg.Done()
-		for msg := range control {
-			ctl, err := parseSignedControl(controlSecret, msg.Payload)
-			if err != nil {
-				c.controlRejected.Add(1)
-				continue
-			}
-			if err := h.Control(ctl); err != nil {
-				c.controlRejected.Add(1)
-			}
-		}
+		defer close(bc.done)
+		c.Run(ctx)
 	}()
-
-	key := h.ControlKey()
-	var workerWG sync.WaitGroup
-	for range workers {
-		workerWG.Add(1)
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			defer workerWG.Done()
-			for msg := range b.Receive() {
-				if msg.Channel == key {
-					select {
-					case control <- msg:
-					default:
-						c.controlRejected.Add(1)
-					}
-					continue
-				}
-				c.dispatched.Add(1)
-				if err := h.Dispatch(msg); err != nil {
-					c.dispatchErrors.Add(1)
-				}
-			}
-		}()
-	}
-	go func() {
-		workerWG.Wait()
-		close(control)
-	}()
-	return c
+	return bc
 }
 
 // wait blocks until every consumer goroutine has returned. The caller closes the bus
-// first: that is what ends the range over Receive.
-func (c *consumer) wait() { c.wg.Wait() }
-
-// parseSignedControl verifies one control envelope and returns the message inside it.
-//
-// Verification is over the literal body string, before it is parsed. An envelope whose
-// signature does not match, or whose timestamp is outside ±300s, has no effect at all
-// (FR-23, docs/04-integration.md §3).
-func parseSignedControl(secret string, payload []byte) (hub.Control, error) {
-	var envelope struct {
-		TS    int64  `json:"ts"`
-		Nonce string `json:"nonce"`
-		Body  string `json:"body"`
-		Sig   string `json:"sig"`
-	}
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return hub.Control{}, fmt.Errorf("control envelope is not a JSON object: %w", err)
-	}
-	if delta := time.Since(time.Unix(envelope.TS, 0)); delta > 300*time.Second || delta < -300*time.Second {
-		return hub.Control{}, fmt.Errorf("control envelope timestamp is outside the ±300s window")
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = io.WriteString(mac, strconv.FormatInt(envelope.TS, 10)+"."+envelope.Nonce+"."+envelope.Body)
-	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(envelope.Sig)) != 1 {
-		return hub.Control{}, fmt.Errorf("control envelope signature does not verify")
-	}
-	return hub.ParseControl([]byte(envelope.Body))
+// first: that is what ends the drain of Receive, and the cancellation here is the backstop
+// for a bus that did not.
+func (c *busConsumer) wait() {
+	c.stop()
+	<-c.done
 }
 
 // ---------------------------------------------------------------------------

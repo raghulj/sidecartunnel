@@ -65,22 +65,21 @@ message rather than a PID that has already exited.
 | Connect webhook | Real `webhook.Client` against a stub application on `httptest`, which verifies the gateway's HMAC exactly as `docs/04-integration.md` §1.4 specifies |
 | Clients | Real `gorilla/websocket` over real TCP |
 | Publisher | A third `go-redis` client that is neither replica, publishing straight to Redis — which is how an application publishes, and the only way to send a control message neither gateway sent |
-| Bus consumer | **Owned by this suite**, not by `internal/` — see the caveat below |
+| Bus consumer | Real `consumer.Consumer` — the same package `main` constructs |
 
-### The Bus Consumer Caveat
+### The Bus Consumer
 
-The loop that drains `bus.Receive()` into `hub.Dispatch`, and routes the control channel to
-`hub.Control` on a goroutine of its own, is not under `internal/`. It lives in
-`cmd/sidecartunnel`, in `package main`, which no test outside that directory can import.
-The suite therefore supplies its own, in `harness_test.go`, along with the control-envelope
-signature verification of FR-23.
+The loop that drains `bus.Receive()` into `hub.Dispatch`, routes the control channel to
+`hub.Control` on a goroutine of its own, and verifies the FR-23 control envelope is
+`internal/consumer`. This suite constructs it exactly as `cmd/sidecartunnel` does, so the
+routing rule and the signature check under test are the ones that ship.
 
-This matters to what the suite proves. That routing rule and that signature check are the
-suite's own code; only the packages beneath them are the system under test. The two
-implementations are the same shape — control off the fan-out path, non-blocking sends,
-verification over the literal signed body — and they will drift. Moving the consumer and
-the control verifier into a package under `internal/` would let both `main` and this suite
-use one implementation, and is the right fix.
+They were not always. Both lived in `cmd/sidecartunnel`, in `package main`, which no test
+outside that directory can import, and this suite carried its own equivalent in
+`harness_test.go`. Two implementations of one rule drift, and the copy under test was not
+the copy that shipped. `harness_test.go` now holds only the lifecycle — start the workers,
+stop them, wait — and the publisher-side signer, which belongs to the suite because the
+suite plays the application.
 
 ### No Sleeping
 
@@ -199,8 +198,8 @@ problem.
 | `r.bus.Health().Subscriptions` | Channels confirmed subscribed upstream. Always includes `_control` |
 | `r.bus.Health().Reconnects` | `st_bus_reconnects_total`. Climbing against a healthy Redis is the M8 signature |
 | `r.bus.Health().Dropped` | Messages discarded because the intake was full |
-| `r.cons.dispatched` | Messages the consumer handed to the hub. Separates "Redis never sent it" from "the gateway never delivered it" |
-| `r.cons.controlRejected` | Control envelopes dropped for a bad signature, a stale timestamp, or a malformed body |
+| `r.cons.Stats().Dispatched` | Messages the hub accepted for fan-out. Separates "Redis never sent it" from "the gateway never delivered it" |
+| `r.cons.Stats().ControlRejected` | Control envelopes dropped for a bad signature, a stale timestamp, or a malformed body. `ControlUnsigned`, `ControlStale` and `ControlMalformed` separate the three |
 | `r.srv.Stats()` | Accepted, refused, unavailable, origin-rejected, and connections held right now |
 | `r.web.Stats()` | Webhook outcomes, with refusals, rejections and failures counted apart |
 
@@ -221,7 +220,7 @@ docker ps -a --filter name=st-it- --format '{{.Names}}' | xargs -r docker rm -f
   A test whose comment cannot name what it protects is a test nobody will dare delete and
   nobody will trust.
 - Prove an absence positively. Publish the thing that must not arrive, then the thing that
-  must, and assert on the order of receipt — or synchronise on `r.cons.dispatched` when the
+  must, and assert on the order of receipt — or synchronise on `r.cons.Stats().Dispatched` when the
   two would race.
 - Never depend on the order of two publishes on one channel. See Known Behaviour.
 - `t.Parallel()`, always. `newCluster` gives every test its own prefix and database.

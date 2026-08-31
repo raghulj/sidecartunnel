@@ -109,7 +109,7 @@ func TestBroadcastBurstDoesNotEvictTheGateway(t *testing.T) {
 	}
 
 	health := r.bus.Health()
-	dispatched := r.cons.dispatched.Load()
+	dispatched := r.cons.Stats().Dispatched
 	reconnects := health.Reconnects - before
 	t.Logf("burst of %d messages: %d reached the hub, %d/%d delivered across %d subscribers, %d dropped at the intake, %d bus reconnect(s)",
 		burstMessages, dispatched, delivered, burstMessages*burstSubscribers, burstSubscribers, health.Dropped, reconnects)

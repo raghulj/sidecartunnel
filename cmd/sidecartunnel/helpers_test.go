@@ -13,14 +13,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/bus"
 	"github.com/raghulj/sidecartunnel/internal/config"
-	"github.com/raghulj/sidecartunnel/internal/proto"
 )
 
 // waitFor is the generous failure detector docs/14-coding-standards.md §2 allows in place
@@ -202,21 +200,6 @@ func loadConfig(t *testing.T, env map[string]string) *config.Config {
 	return cfg
 }
 
-// signControl builds the signed control envelope of docs/04-integration.md §3: the action
-// as an opaque JSON string, and a MAC over the exact bytes carried.
-func signControl(secret string, ts time.Time, body string) []byte {
-	stamp := strconv.FormatInt(ts.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(stamp + "." + "nonce-1" + "." + body))
-	payload, _ := json.Marshal(controlEnvelope{
-		TS:    ts.Unix(),
-		Nonce: "nonce-1",
-		Body:  body,
-		Sig:   hex.EncodeToString(mac.Sum(nil)),
-	})
-	return payload
-}
-
 // fakeSignal is an os.Signal a test can send without touching the process.
 type fakeSignal string
 
@@ -274,81 +257,3 @@ func waitSubscribed(t *testing.T, b interface{ Health() bus.Health }, n int) {
 
 // signals returns a channel a test can push fake signals onto.
 func signalChan(n int) chan os.Signal { return make(chan os.Signal, n) }
-
-// testSink is a hub.Sink for the consumer tests. The hub keys maps by Sink, so it must be
-// a pointer: an interface holding an uncomparable value panics the moment it is inserted.
-type testSink struct {
-	id   string
-	user string
-
-	mu     sync.Mutex
-	frames []*proto.Frame
-	closes []proto.CloseCode
-
-	delivered chan *proto.Frame
-	closed    chan proto.CloseCode
-}
-
-func newTestSink(id, user string) *testSink {
-	return &testSink{
-		id:        id,
-		user:      user,
-		delivered: make(chan *proto.Frame, 64),
-		closed:    make(chan proto.CloseCode, 8),
-	}
-}
-
-func (s *testSink) ID() string   { return s.id }
-func (s *testSink) User() string { return s.user }
-
-func (s *testSink) Send(f *proto.Frame) bool {
-	s.mu.Lock()
-	s.frames = append(s.frames, f)
-	s.mu.Unlock()
-	select {
-	case s.delivered <- f:
-	default:
-	}
-	return true
-}
-
-func (s *testSink) Close(code proto.CloseCode, _ string) {
-	s.mu.Lock()
-	s.closes = append(s.closes, code)
-	s.mu.Unlock()
-	select {
-	case s.closed <- code:
-	default:
-	}
-}
-
-// closeCount reports how many times Close has been called.
-func (s *testSink) closeCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.closes)
-}
-
-// waitFrame blocks until the sink accepts a frame, failing the test rather than hanging.
-func (s *testSink) waitFrame(t *testing.T) *proto.Frame {
-	t.Helper()
-	select {
-	case f := <-s.delivered:
-		return f
-	case <-time.After(waitFor):
-		t.Fatalf("sink %s: no frame within %s", s.id, waitFor)
-		return nil
-	}
-}
-
-// waitClose blocks until the sink is closed, failing the test rather than hanging.
-func (s *testSink) waitClose(t *testing.T) proto.CloseCode {
-	t.Helper()
-	select {
-	case c := <-s.closed:
-		return c
-	case <-time.After(waitFor):
-		t.Fatalf("sink %s: no close within %s", s.id, waitFor)
-		return 0
-	}
-}

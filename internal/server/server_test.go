@@ -276,12 +276,12 @@ func TestMaxConnectionsUnlimited(t *testing.T) {
 	r.dial().connect()
 }
 
-// TestMaxConnectionsPerUser_RefusesAfterAuthorization_m8: the per-user cap can only be
+// TestMaxConnectionsPerUser_RefusesAfterAuthorization_FR25: the per-user cap can only be
 // enforced once the application has said who this is, so it closes the websocket rather
 // than answering an HTTP status. It is a decision — 3003, reconnect false — because the
 // cap exists to stop one looping client from consuming the global limit, and a retryable
 // close would invite exactly that loop.
-func TestMaxConnectionsPerUser_RefusesAfterAuthorization_m8(t *testing.T) {
+func TestMaxConnectionsPerUser_RefusesAfterAuthorization_FR25(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, func(c *config.Config) { c.Limits.MaxConnectionsPerUser = 1 })
 

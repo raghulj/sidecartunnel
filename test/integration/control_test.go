@@ -223,7 +223,7 @@ func TestUnsignedControlMessageHasNoEffect(t *testing.T) {
 	c.publishControl(map[string]any{"action": "disconnect", "client": client.id})
 	client.wantDisconnectWithin(proto.CloseRevoked, revocationBudget)
 
-	if n := c.r(0).cons.controlRejected.Load(); n != 1 {
+	if n := c.r(0).cons.Stats().ControlRejected; n != 1 {
 		t.Fatalf("the consumer rejected %d control envelope(s), want exactly 1 (FR-23)", n)
 	}
 }
