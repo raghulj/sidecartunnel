@@ -141,7 +141,10 @@ app, delivered by the gateway, under a header prefix implying the gateway vouche
 **FR-20 — Admin surface.** The gateway MUST expose, on a separate listener,
 `/health`, `/ready`, `/metrics`, `/channels`, and `POST /disconnect`, with `/channels` and
 `/disconnect` requiring a bearer token compared in constant time.
-*Accept:* an unauthenticated `/channels` returns 401; `/metrics` does not.
+*Accept:* with `admin.token` configured, `/channels` without a token returns 401; with
+`admin.token` unset the authenticated routes are not registered at all and return **404**,
+so an accidentally unconfigured admin API looks absent rather than merely closed.
+`/metrics` requires no token in either case.
 
 **FR-21 — Bus-key isolation.** The hub MUST key subscriptions by the full bus key
 (`{bus.prefix}{channel}`), never the bare channel name.

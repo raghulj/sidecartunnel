@@ -141,7 +141,7 @@ Prometheus on `/metrics`.
 | `st_subscriptions_current` | gauge | app, namespace | |
 | `st_messages_published_total` | counter | app, namespace | |
 | `st_messages_delivered_total` | counter | app, namespace | Ratio to published = average fan-out |
-| `st_messages_dropped_total` | counter | reason | `oversize`, `malformed`, `no_subscriber` |
+| `st_messages_dropped_total` | counter | reason | `oversize`, `malformed`, `no_subscriber`, `intake` — the last means the bus intake channel filled and the reader dropped rather than blocking, which is the M8 behaviour and a sign the dispatch workers are behind |
 | `st_webhook_duration_seconds` | histogram | app, status | The app's auth latency, which drives §4 |
 | `st_webhook_inflight` | gauge | app | Sitting at the cap = storm in progress |
 | `st_webhook_requests_total` | counter | app, status | 401 rate = revocations or a broken session |
@@ -153,6 +153,17 @@ Prometheus on `/metrics`.
 | `st_control_rejected_total` | counter | reason | Unsigned or stale control messages |
 | `st_slow_consumer_disconnects_total` | counter | app | Sustained non-zero = `outbound_queue` too small, or genuinely bad clients |
 | `st_subscribe_denied_total` | counter | app, namespace | A spike = a client bug, or someone probing |
+
+The `app` label is `app.name` and is constant for the process; it is attached once, at
+construction, not passed at each call site. The `namespace` label is the namespace block
+that governs the channel, never the channel itself — `room-4410` is labelled
+`namespace="room"`. A channel whose namespace has no block and for which no reserved `""`
+block is configured is labelled `namespace="_other"` rather than by its own name. That
+fold matters on `st_subscribe_denied_total`, which is the one family a client can drive:
+a client subscribing to `probe1-x`, `probe2-x`, … would otherwise mint a time series per
+attempt, which is the cardinality failure `06-channels.md` §2 describes, available on
+demand to anyone who can open a socket. `_other` cannot collide with a real namespace
+because a channel beginning `_` is reserved and refused (`06-channels.md` §4).
 
 Alert on: `st_bus_reconnects_total` increasing, `st_webhook_inflight` at cap for more than
 a minute, `st_slow_consumer_disconnects_total` rate above baseline,
