@@ -71,9 +71,6 @@ func defaults() *Config {
 			MaxFrameSize:            16384,
 			MaxChannelLength:        255,
 		},
-		Control: Control{
-			RefreshSpread: Duration(60 * time.Second),
-		},
 		Log: Log{
 			Level:  "info",
 			Format: "json",

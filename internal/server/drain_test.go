@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,5 +147,128 @@ func TestNoGoroutineLeaks_NFR3(t *testing.T) {
 	got := runtime.NumGoroutine()
 	if allowed := baseline + baseline/20 + 2; got > allowed {
 		t.Fatalf("goroutines: %d after %d connect/close cycles, baseline %d, allowed %d (NFR-3)", got, cycles, baseline, allowed)
+	}
+}
+
+// TestDrain_ConnectionAdmittedAfterTheSnapshot_FR19 drives the window between reserve()
+// and track() deterministically, with a seam rather than a sleep.
+//
+// ServeHTTP reserves a slot before the upgrade; the connection is only put in s.conns —
+// the set Drain snapshots — once it has been built. A handshake that lands in between is
+// invisible to the drain, and two things follow, both on every deploy:
+//
+//   - The connection is never told to close, so Drain waits out the whole of
+//     server.drain_timeout, serve returns exit 1, and that client gets a bare 1006
+//     instead of a 3000 carrying a spread retry_after — the stampede FR-19 exists to
+//     prevent, aimed at the application by the pod being rolled.
+//   - The tracking used to be a sync.WaitGroup, and Add on a counter at zero concurrently
+//     with Wait is "sync: WaitGroup misuse", which is a panic: the process dies during
+//     SIGTERM.
+//
+// The window is tens of microseconds against a handshake rate of a couple of hundred a
+// second, so it is rare per connection and routine per fleet.
+func TestDrain_ConnectionAdmittedAfterTheSnapshot_FR19(t *testing.T) {
+	reserved := make(chan struct{})
+	proceed := make(chan struct{})
+	snapshotted := make(chan struct{})
+	var snapshotOnce sync.Once
+
+	r := newRigWithOptions(t, func(o *Options) {
+		o.seams.afterReserve = func() {
+			select {
+			case <-reserved:
+			default:
+				close(reserved)
+				<-proceed
+			}
+		}
+		// The rig drains again on cleanup, so both hooks fire at most once.
+		o.seams.afterDrainSnapshot = func() { snapshotOnce.Do(func() { close(snapshotted) }) }
+	}, func(c *config.Config) {
+		// A drain that is going to fail should fail inside the test's own budget rather
+		// than the documented 20s.
+		c.Server.DrainTimeout = config.Duration(failAfter)
+	})
+	r.http = httptest.NewServer(r.srv.Handler())
+	t.Cleanup(r.http.Close)
+
+	dialed := make(chan *client, 1)
+	go func() {
+		c, _, err := r.dialOrigin(testOrigin)
+		if err != nil {
+			t.Errorf("dial: %v", err)
+			close(dialed)
+			return
+		}
+		dialed <- c
+	}()
+
+	// The handshake is now past reserve() and has not been tracked.
+	select {
+	case <-reserved:
+	case <-time.After(failAfter):
+		t.Fatal("no handshake reached the window between reserve and track")
+	}
+
+	drained := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*failAfter)
+		defer cancel()
+		drained <- r.srv.Drain(ctx)
+	}()
+
+	// Drain has set draining and taken its snapshot, which this connection is not in.
+	select {
+	case <-snapshotted:
+	case <-time.After(failAfter):
+		t.Fatal("Drain never took its snapshot")
+	}
+	close(proceed)
+
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain: %v — the connection admitted after the snapshot was never closed (FR-19)", err)
+		}
+	case <-time.After(2 * failAfter):
+		t.Fatal("Drain did not return")
+	}
+
+	c := <-dialed
+	if c == nil {
+		t.Fatal("the handshake never completed")
+	}
+	got := c.wantDisconnect(proto.CloseDraining)
+	if !got.Reconnect || got.RetryAfter <= 0 {
+		t.Fatalf("disconnect = %+v, want reconnect true with a spread retry_after (FR-19, §7.1)", got)
+	}
+}
+
+// TestDrain_ConcurrentDrainsBothReturn_FR19: SIGTERM and a cancelled context can both
+// arrive, so two drains can be in flight at once and each has to see the replica empty.
+func TestDrain_ConcurrentDrainsBothReturn_FR19(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	c := r.dial()
+	c.connect("room-1")
+
+	const drains = 3
+	errs := make(chan error, drains)
+	for range drains {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), failAfter)
+			defer cancel()
+			errs <- r.srv.Drain(ctx)
+		}()
+	}
+	for range drains {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Errorf("Drain: %v", err)
+			}
+		case <-time.After(2 * failAfter):
+			t.Fatal("a concurrent Drain never returned")
+		}
 	}
 }

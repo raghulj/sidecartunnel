@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { connect, backoffDelay, resolveUrl, StError } from './sidecartunnel.js';
+import { connect, backoffDelay, clampRetryAfter, MAX_RETRY_AFTER_MS, resolveUrl, StError } from './sidecartunnel.js';
 import { toUmd } from './build-umd.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -336,6 +336,55 @@ describe('reconnection — §7.1, §8.2', () => {
     sock.emit({ disconnect: { code: 3000, reason: 'draining', reconnect: true, retry_after: 0 } });
     sock.serverClose(3000, 'draining');
     assert.deepEqual(h.clock.scheduled, [0]);
+  });
+
+  test('an absurd retry_after is clamped to the largest the gateway can legitimately send', async () => {
+    const h = harness();
+    const sock = await handshake(h);
+    // §7.1 says clients MUST honour retry_after, and a client with no ceiling cannot
+    // survive a gateway that sends one wrong: 24 days parks the tab for its lifetime.
+    sock.emit({ disconnect: { code: 3000, reason: 'draining', reconnect: true, retry_after: 2147483647 } });
+    sock.serverClose(3000, 'draining');
+    assert.deepEqual(h.clock.scheduled, [MAX_RETRY_AFTER_MS]);
+  });
+
+  test('retry_after at the ceiling is passed through unchanged', async () => {
+    const h = harness();
+    const sock = await handshake(h);
+    sock.emit({ disconnect: { code: 3000, reason: 'draining', reconnect: true, retry_after: MAX_RETRY_AFTER_MS } });
+    sock.serverClose(3000, 'draining');
+    assert.deepEqual(h.clock.scheduled, [MAX_RETRY_AFTER_MS]);
+  });
+
+  test('a negative retry_after is not guidance, so our own backoff is used', async () => {
+    const h = harness({ random: () => 0.25 });
+    const sock = await handshake(h);
+    sock.emit({ disconnect: { code: 3000, reason: 'draining', reconnect: true, retry_after: -5000 } });
+    sock.serverClose(3000, 'draining');
+    assert.deepEqual(h.clock.scheduled, [0.25 * 1000], 'full jitter over the n=0 ceiling');
+    const info = h.states.filter(([s]) => s === 'connecting').pop()[1];
+    assert.equal(info.retryAfter, null, 'the rejected value is not reported as honoured');
+  });
+
+  test('a non-finite retry_after is not guidance either', async () => {
+    const h = harness({ random: () => 0.25 });
+    const sock = await handshake(h);
+    // Reachable over the wire: JSON.parse('{"retry_after":1e999}') is Infinity, and
+    // `typeof Infinity === 'number'`, so the type check alone passed it to setTimeout —
+    // which clamps it back to ~1ms and returns the whole fleet at once.
+    sock.emit('{"disconnect":{"code":3000,"reason":"draining","reconnect":true,"retry_after":1e999}}');
+    sock.serverClose(3000, 'draining');
+    assert.deepEqual(h.clock.scheduled, [0.25 * 1000]);
+  });
+
+  test('clampRetryAfter states its own bounds', () => {
+    assert.equal(clampRetryAfter(0), 0);
+    assert.equal(clampRetryAfter(18400), 18400);
+    assert.equal(clampRetryAfter(MAX_RETRY_AFTER_MS + 1), MAX_RETRY_AFTER_MS);
+    assert.equal(clampRetryAfter(-1), null);
+    assert.equal(clampRetryAfter(Infinity), null);
+    assert.equal(clampRetryAfter('18400'), null);
+    assert.equal(clampRetryAfter(undefined), null);
   });
 
   test('without retry_after the delay is full jitter over the attempt ceiling', async () => {
@@ -698,6 +747,28 @@ describe('robustness', () => {
   });
 });
 
+describe('unsubscribe before the connect reply', () => {
+  test('cancels the subscribe without rejecting its promise', async () => {
+    const h = harness();
+    // No .catch anywhere: an ordinary control-flow path must not produce an unhandled
+    // rejection. The application asked for the channel and then changed its mind before
+    // the connection was even up.
+    const sub = h.st.subscribe('room-4410', () => {});
+    await h.st.unsubscribe('room-4410');
+    assert.equal(await sub, true, 'the cancelled subscribe settles, and settles as done');
+    assert.deepEqual(h.st.channels(), []);
+
+    // And it does not ride along in the connect frame (§8.3).
+    h.sock().accept();
+    assert.deepEqual(h.sock().sent[0], { id: 1, connect: {} });
+  });
+
+  test('an unsubscribe with no registry entry is still a rejection', async () => {
+    const h = harness();
+    await assert.rejects(h.st.unsubscribe('room-4410'), (e) => e instanceof StError && e.code === 105);
+  });
+});
+
 describe('close', () => {
   test('is idempotent and emits exactly one closed transition', async () => {
     const h = harness();
@@ -720,6 +791,45 @@ describe('close', () => {
     h.clock.advance(600000);
     assert.equal(h.t.sockets.length, 1);
     assert.equal(h.st.state, 'closed');
+  });
+
+  test('closing during backoff settles everything the caller is awaiting', async () => {
+    const h = harness();
+    const sock = await handshake(h);
+    sock.serverClose(3004, 'ping timeout');       // now in backoff: no socket at all
+    assert.equal(h.clock.pending, 1);
+
+    // Queued behind the connect reply that will never come (§8.1), and a registry entry
+    // that rides the next connect frame's subs (§8.3). close() clears the timer and
+    // returns; _onClose never runs because there is no socket, so before the fix both of
+    // these hung for the lifetime of the page.
+    const syncing = h.st.sync();
+    const sub = h.st.subscribe('room-4410', () => {});
+    h.st.close();
+
+    await assert.rejects(syncing, (e) => e instanceof StError && e.code === 'closed');
+    await assert.rejects(sub, (e) => e instanceof StError && e.code === 'closed');
+    assert.equal(h.st.state, 'closed');
+    assert.deepEqual(h.st.channels(), []);
+  });
+
+  test('closing before the socket opens settles a pending subscribe', async () => {
+    const h = harness();
+    const sub = h.st.subscribe('room-4410', () => {});
+    h.st.close();
+    await assert.rejects(sub, (e) => e instanceof StError && e.code === 'closed');
+  });
+
+  test('a socket that throws on close still settles pending work', async () => {
+    const h = harness();
+    const sock = await handshake(h);
+    const syncing = h.st.sync();
+    sock.emit({ id: sock.last.id, sync: { channels: [] } });
+    await syncing;
+    const hanging = h.st.sync();
+    sock.close = () => { throw new Error('already gone'); };
+    h.st.close();
+    await assert.rejects(hanging, (e) => e instanceof StError);
   });
 
   test('closing before the socket opens is safe', () => {
@@ -778,6 +888,8 @@ describe('umd variant', () => {
     assert.equal(typeof sandbox.sidecartunnel.backoffDelay, 'function');
     assert.equal(typeof sandbox.sidecartunnel.resolveUrl, 'function');
     assert.equal(typeof sandbox.sidecartunnel.StError, 'function');
+    assert.equal(typeof sandbox.sidecartunnel.clampRetryAfter, 'function');
+    assert.equal(sandbox.sidecartunnel.MAX_RETRY_AFTER_MS, 300000);
     assert.equal(sandbox.sidecartunnel.backoffDelay(0, { random: () => 0.5 }), 500);
   });
 });

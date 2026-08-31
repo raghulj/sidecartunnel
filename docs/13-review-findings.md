@@ -187,8 +187,11 @@ whose send is non-blocking, falling back to `go conn.Close()` on overflow.
   — was indefensible.
 - `refresh` and `disconnect` MUST name exactly one of `user` or `client`, matched
   **exactly, never as a glob**. An omitted target is a validation error, not "all".
-- Forced revalidation is spread over `control.refresh_spread` (default 60s) with
-  `retry_after`, so a legitimate mass refresh cannot stampede the application either.
+- Forced revalidation carries a `retry_after`, so a legitimate mass refresh cannot
+  stampede the application either. **Correction, later pass:** this said
+  `control.refresh_spread` and that key never existed in code. The spread is
+  `server.drain_spread`, which is the connection layer's one spread window; the key has
+  been removed. See the second addendum below.
 
 ---
 
@@ -409,6 +412,74 @@ replica returns 10,000 clients; spread over 60s that is ~7 concurrent authorizat
 against a 16-worker pool, and in a one-second window it is ~400 — a full application
 outage. The gateway is nowhere near its limits at 20,000 connections. **The application's
 worker pool is the binding constraint, and it always was.**
+
+## Addendum, later pass — a third FR-14
+
+An adversarial review of the *implementation* found `control.refresh_spread` defined,
+defaulted, validated, documented and read by no code — the same shape as FR-14's
+`limits.max_message_size` and the same shape `scripts/trace.sh` exists to catch. A comment
+in `internal/hub/control.go` said the connection layer applied it; the connection layer
+spreads `retry_after` over `server.drain_spread` and always has.
+
+**I removed the key rather than wiring it.** Three reasons, in order of weight:
+
+1. There is one `retry_after` spread in the connection layer, keyed to
+   `server.drain_spread` and applied to 3000, 3503 and 3008 alike. A second window would
+   have needed a second field, a second default and a close-code-to-window mapping on a
+   path that has none.
+2. C8 above made `refresh` name **exactly one** `user` or `client`. One message therefore
+   reaches at most `limits.max_connections_per_user` connections — 20 by default — which
+   is not a stampede. The stampede case is a loop over users, and a loop is paced by the
+   loop and then spread again, per connection, over `drain_spread`.
+3. `drain_spread`'s documented value is derived from exactly the arithmetic a refresh
+   window would be derived from: concurrent authorizations against the application's
+   worker pool. There is no reasoning that sets the two differently, so the second key
+   was a way to get them wrong.
+
+A key that lies is worse than a key that is absent. `04-integration.md` §3 and
+`08-config.md` §3 now say `server.drain_spread`.
+
+The same pass gave `drain_spread` a documented range, 1s–300s. It had only a
+non-negative check while every neighbouring duration had a range, so
+`drain_spread: 500us` started cleanly and reached arithmetic that works in whole
+milliseconds. The floor is where the unit stops being expressible; the ceiling matches
+`drain_timeout` and is also the ceiling the browser client clamps `retry_after` to
+(`03-client-protocol.md` §7.1).
+
+## Addendum, later pass — six defects in the implementation, not the specification
+
+The same review of the code found six the specification could not have caught, because
+every one of them is a place where the code says one thing and does another. They are
+recorded here rather than in a new document because the pattern is the same as the one
+below: **a comment asserting an invariant is not the invariant**, and four of these six
+had a comment claiming exactly the property that was violated three lines away.
+
+| | Defect | Fix |
+|---|---|---|
+| 1 | `Server.serve` captured the `Cookie` header in the closure it handed `conn.New`, and a `Conn` keeps that closure for `app.expires_in` — 6h. `internal/conn`'s own doc comment said the value "never enters the type that outlives the call" (FR-22, S3) | A single-use `connectAuthorizer` swaps the request out before it calls the application, and a `Conn` drops its `Authorizer` in the same act that makes a second `connect` "already connected" |
+| 2 | A handshake admitted between `reserve()` and `track()` is not in `Drain`'s snapshot: never closed, so the drain waits out `drain_timeout` and that client gets 1006 instead of 3000 with a spread `retry_after`. The tracking `sync.WaitGroup` was also `Add`ed to while `Drain` was inside `Wait`, which is a fatal misuse (FR-19) | `track` refuses under the same lock that sets `draining`, and the connection closes itself with what the drain would have sent. The drain waits on the reservation count, which covers a handshake from before the upgrade to after it unwinds |
+| 3 | `retryAfter` divided by `retrySpread.Milliseconds()`, which is 0 under 1ms, with a `#nosec` comment asserting `positive()` prevented it — `positive()` guarantees a positive duration, not a positive millisecond count. Every close panicked (§7.1) | Floored at 1 in the arithmetic, not in the validator: a panic on a connection goroutine takes the process with it |
+| 4 | `06-channels.md` §1's character rule was enforced nowhere. `room-*` granted `room- \n admin`, into the hub map, a Redis `SUBSCRIBE`, the subscribe log line the runbook greps, and every `sync` reply | Enforced on bytes — 0x21–0x7E — which also refuses invalid UTF-8 with no decode. Error 101, or omitted from `subs` on the connect frame |
+| 5 | `Hub.Attach` called `registerLocked`, re-creating the maps `Remove` had just deleted, against the invariant `ErrNotRegistered`'s own doc comment states. Reachable when SIGTERM closes a connection whose reader is blocked in the connect webhook and the application then answers 200 (M4) | `Attach` registers nothing. `Add` does, at the upgrade, where it already happened — so "never added" and "already removed" no longer have to be told apart |
+| 6 | `Hub.Close` documented only that it must not race `Dispatch`, but four methods reach `enqueueClose`, whose overflow path `Add`ed to the WaitGroup `Close` was waiting on. `closeLoop` also abandoned up to `CloserQueue` queued closes on `ctx.Done` | Close announces under a mutex that nothing more may be queued, waits for what was spawned before that, and performs the remainder itself. A close enqueued afterwards runs inline |
+
+Two smaller ones from the same pass. `Conn.Unsubscribed` had no production caller once S3
+removed revalidation — it was inflating FR-17's evidence at 100% coverage while covering a
+path that cannot happen — and is deleted; the requirement is carried by
+`internal/hub`'s control-unsubscribe test and the integration suite, which is where the
+push is actually built. And `Conn.Send` returned false both for a full queue and for a
+closed connection, which are not the same thing to a caller who must close on false: a
+drain turned every connection it had just closed into another slow-consumer close.
+`hub.Sink` already said a fan-out/close race "must not be an error path"; it now returns
+true and drops the frame.
+
+The two WaitGroup misuses are worth naming together. Both were `Add` on a group another
+goroutine was inside `Wait` on, both were reachable only during shutdown, and both were
+written by someone (me) who knew the rule and did not see that a second code path reached
+the `Add`. Neither is detectable by `-race`; the runtime's own check fires, and what it
+does is panic. Where a WaitGroup's `Add` and `Wait` cannot be shown to be ordered by
+construction, this repository now counts under the mutex that already guards the state, or
+does not use a WaitGroup.
 
 ## What I got wrong, in one place
 

@@ -113,10 +113,21 @@ forever — the same hazard §8.5 addresses for `unsubscribed`, reached by a dif
 
 ### 4.2 `subscribe`
 
-The channel is matched against the connection's grants (see `05-authorization.md` §3).
-Subscribing to a channel already held is error 104 — not silently idempotent, because in
-practice a duplicate subscribe means the client's own registry has drifted and hiding that
-makes reconnect bugs very hard to find.
+The channel name is checked against `06-channels.md` §1 first — 1 to
+`limits.max_channel_length` bytes of printable ASCII, no whitespace and no control
+characters — and a name that fails is error 101. That rule is not cosmetic: a grant is a
+prefix, so `room-*` matches `room- \n admin`, and the name would otherwise reach the
+subscribe log line an operator greps, a Redis `SUBSCRIBE`, and every `sync` reply. §2 of
+that document requires names be human-readable **because** they appear in logs.
+
+The channel is then matched against the connection's grants (see `05-authorization.md`
+§3). Subscribing to a channel already held is error 104 — not silently idempotent, because
+in practice a duplicate subscribe means the client's own registry has drifted and hiding
+that makes reconnect bugs very hard to find.
+
+A malformed name on the `connect` frame is omitted from `subs` instead, like any other
+channel the gateway will not take (§4.1), and it is not forwarded to the connect webhook
+in `channels_requested`.
 
 ### 4.3 `unsubscribe`
 
@@ -209,7 +220,7 @@ Returned in `{"error":{…}}` against a command's `id`. The connection stays ope
 | Code | Meaning |
 |---|---|
 | 100 | Internal error |
-| 101 | Bad request — malformed frame, unknown command, duplicate `connect` |
+| 101 | Bad request — malformed frame, unknown command, duplicate `connect`, malformed channel name |
 | 102 | Unknown namespace |
 | 103 | Permission denied |
 | 104 | Already subscribed |
@@ -256,18 +267,36 @@ Every retryable `disconnect` MAY carry `retry_after` in **milliseconds**:
 ```
 
 Clients MUST honour it in place of their own backoff for that attempt. The gateway spreads
-it — on drain, uniformly across `server.drain_spread` — because **the gateway knows how
+it uniformly across `server.drain_spread` — on drain (3000), on grant expiry and control
+`refresh` (3503), and on an unavailable webhook (3008) — because **the gateway knows how
 many connections it is dropping and the client does not.** Client-side jitter alone cannot
 solve this: at the first retry a formula like `min(30s, 2^n) × rand(0.5, 1.5)` yields
 0.5–1.5s, which is precisely the one-second window that `10-operations.md` §4 models as an
-application outage. Backoff widens only after the damage is done.
+application outage. Backoff widens only after the damage is done. 3007 is the exception:
+its `retry_after` is a fixed 60s from §4.4, not a spread.
+
+Clients MUST also bound what they honour:
+
+| Received `retry_after` | Client behaviour |
+|---|---|
+| `0` to `300000` | Waited exactly. |
+| Above `300000` | Clamped to `300000`. |
+| Negative, `NaN` or `Infinity` | Not guidance. Treated as absent — reconnect with full jitter per §8.2. |
+
+`300000` is the top of `server.drain_spread`'s documented range (`08-config.md` §3), so no
+conforming gateway can send more. The bounds exist because a MUST with no ceiling is a way
+to lose a page: `{"retry_after": 1e999}` parses to `Infinity`, and a client that passes
+that to a timer either parks until the tab is closed or, once the timer implementation
+clamps it, returns the whole fleet in one millisecond — the outcome this field exists to
+prevent, reached by obeying it. A negative value is the same problem from the other end.
 
 ## 8. Client obligations
 
 A conforming client MUST:
 
 1. Send `connect` first, and wait for its reply before sending anything else.
-2. Honour `retry_after` when present. When it is absent, reconnect with **full jitter**:
+2. Honour `retry_after` when present, within the bounds in §7.1. When it is absent — or
+   outside those bounds, which is the same thing — reconnect with **full jitter**:
 
    ```
    delay_ms = random(0, min(30000, 1000 * 2^n))      n = 0 for the first retry

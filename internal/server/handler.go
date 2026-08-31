@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/raghulj/sidecartunnel/internal/conn"
+	"github.com/raghulj/sidecartunnel/internal/proto"
 	"github.com/raghulj/sidecartunnel/internal/webhook"
 )
 
@@ -100,19 +102,27 @@ func (s *Server) reserve() bool {
 
 // release returns the reservation. It runs on every exit path from an admitted handshake,
 // including a failed upgrade, or the replica leaks capacity until it refuses everything.
+//
+// It is also what wakes a waiting Drain: the reservation count is what the drain waits
+// on, because it is the only number that covers a handshake from before the upgrade to
+// after the connection has unwound (FR-19).
 func (s *Server) release() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.current--
+	if s.current == 0 && s.drained != nil {
+		close(s.drained)
+		s.drained = nil
+	}
 }
 
 // serve builds one connection from an upgraded socket and runs it until it ends. The
 // caller's goroutine becomes the connection's reader (docs/09-internals.md §3).
 func (s *Server) serve(r *http.Request, sock *websocket.Conn) {
 	// FR-3: the cookie is captured here, forwarded verbatim, and never parsed, validated
-	// or decrypted. It lives in this closure and in nothing that outlives the connect
-	// call, which is what keeps a memory dump of the process from yielding a set of live
-	// sessions (FR-22, docs/13-review-findings.md C3).
+	// or decrypted. It lives in the single-use connectAuthorizer below and in nothing
+	// that outlives the connect call, which is what keeps a memory dump of the process
+	// from yielding a set of live sessions (FR-22, docs/13-review-findings.md C3).
 	req := webhook.Request{
 		Cookie:     r.Header.Get("Cookie"),
 		Origin:     r.Header.Get("Origin"),
@@ -125,20 +135,19 @@ func (s *Server) serve(r *http.Request, sock *websocket.Conn) {
 		ForwardedFor: r.Header.Get("X-Forwarded-For"),
 	}
 
-	var c *conn.Conn
-	built, err := conn.New(conn.Options{
-		ID:       s.newID(),
-		Socket:   sock,
-		Registry: newRegistry(s.ctx, s.hub, s.rates, s.clock),
-		// requested is the connect frame's subs. It arrives as an argument rather than in
-		// the captured req because the frame has not been read when this closure is
-		// built: the cookie is a property of the upgrade, the requested channels are a
-		// property of a frame that comes later (docs/04-integration.md §1.1).
-		Authorizer: conn.AuthorizerFunc(func(ctx context.Context, requested []string) (conn.Authorization, error) {
-			return s.authorize(ctx, c, req, requested)
-		}),
-		Clock: s.clock,
-		Log:   s.log,
+	// The request goes behind a single-use Authorizer rather than into a closure. A
+	// closure keeps what it captured for as long as it is reachable, and the Conn that
+	// holds it is reachable for app.expires_in — 6h by default (FR-22).
+	authorizer := &connectAuthorizer{srv: s}
+	authorizer.req.Store(&req)
+
+	c, err := conn.New(conn.Options{
+		ID:         s.newID(),
+		Socket:     sock,
+		Registry:   newRegistry(s.ctx, s.hub, s.rates, s.clock),
+		Authorizer: authorizer,
+		Clock:      s.clock,
+		Log:        s.log,
 
 		// FR-4 and C2 in two adjacent lines: the handshake budget covers receipt of the
 		// connect frame, and the authorization that follows has its own, longer one.
@@ -164,7 +173,10 @@ func (s *Server) serve(r *http.Request, sock *websocket.Conn) {
 		s.closeSocket(sock)
 		return
 	}
-	c = built
+	// The connection is not known when the Authorizer is built, and cannot be: the
+	// authorizer is an option of conn.New. It is written here and read on the reader
+	// goroutine, which is this one (docs/09-internals.md §3).
+	authorizer.conn = c
 
 	// Registered before the connect frame arrives, so a control disconnect can reach this
 	// connection from the moment it exists rather than from the moment it subscribes
@@ -176,9 +188,25 @@ func (s *Server) serve(r *http.Request, sock *websocket.Conn) {
 		return
 	}
 
-	s.track(c)
+	if s.seams.afterReserve != nil {
+		s.seams.afterReserve()
+	}
+
+	accepted := s.track(c)
 	defer s.untrack(c)
 
+	if !accepted {
+		// Admitted between reserve() and here, which is after Drain fixed its snapshot:
+		// this connection is in no set the drain will ever look at again, so it closes
+		// itself with exactly what the drain would have sent. Without this the client
+		// gets a bare 1006 when the drain budget runs out and reconnects with no
+		// retry_after, which is the stampede FR-19 exists to prevent
+		// (docs/03-client-protocol.md §7.1).
+		c.Close(proto.CloseDraining, drainReason)
+	}
+
+	// Run returns once both of the connection's goroutines have, so the deferred release
+	// below — and with it the drain's wait — happens after this connection is gone.
 	c.Run(s.ctx)
 }
 
@@ -193,12 +221,19 @@ func (s *Server) closeSocket(sock *websocket.Conn) {
 	}
 }
 
-// track records a live connection, for the drain and for the per-user cap.
-func (s *Server) track(c *conn.Conn) {
-	s.wg.Add(1)
+// track records a live connection for the drain and for the per-user cap, and reports
+// whether this replica is still accepting.
+//
+// The report is not advisory. Drain snapshots s.conns once and never looks again, so a
+// connection tracked after that snapshot would never be told to close: the drain would
+// wait out the whole of server.drain_timeout and the client would get a bare 1006. The
+// check is in the same critical section as the insert because a check outside it is the
+// same race one lock later (FR-19).
+func (s *Server) track(c *conn.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conns[c] = ""
+	return !s.draining
 }
 
 // untrack forgets a connection and returns its slot in the per-user count.
@@ -218,7 +253,6 @@ func (s *Server) untrack(c *conn.Conn) {
 		}
 	}
 	s.mu.Unlock()
-	s.wg.Done()
 }
 
 // admitUser applies limits.max_connections_per_user and binds the connection to its user.
@@ -235,6 +269,50 @@ func (s *Server) admitUser(c *conn.Conn, user string) bool {
 	s.conns[c] = user
 	s.users[user]++
 	return true
+}
+
+// connectAuthorizer is the conn.Authorizer one connection is built with: it holds that
+// handshake's webhook.Request until the connect frame uses it, and not one instant
+// longer.
+//
+// It is a type rather than the closure it used to be, and that is the whole of FR-22 on
+// this side of the seam. A closure holds what it captured for as long as it is reachable,
+// and the Conn holding it is reachable until app.expires_in — 6h by default — so 20,000
+// connections meant 20,000 session cookies sitting in the heap, replayable by anyone who
+// obtained a core dump. Here Authorize swaps the request out before it makes the call, so
+// the value is unreachable from any live object the moment authorization returns, whoever
+// still holds the Authorizer (docs/13-review-findings.md S3).
+//
+// It is used exactly once. A Conn drops its reference to the Authorizer as it takes it,
+// so the refusal below is not the connection's ordinary duplicate-connect path — it is
+// the guarantee holding for a caller that kept one.
+type connectAuthorizer struct {
+	srv *Server
+
+	// conn is the connection being authorized. It is written by the handler goroutine
+	// before the connection runs and read by the reader goroutine, which is that same
+	// goroutine (docs/09-internals.md §3).
+	conn *conn.Conn
+
+	// req is the handshake's request, cookie and all. Swapped for nil by the first
+	// Authorize, which is what makes the retention structural rather than a convention
+	// somebody has to keep (FR-22).
+	req atomic.Pointer[webhook.Request]
+}
+
+// Authorize calls the application with this handshake's request and the channels the
+// connect frame asked for, and releases the request before the call.
+//
+// requested is a hint, bounded by the connection and never authority
+// (docs/04-integration.md §1.1). A second call returns a failure rather than a refusal:
+// nothing about the client has been decided, so it closes with proto.CloseAuthUnavailable
+// and reconnect true (FR-6).
+func (a *connectAuthorizer) Authorize(ctx context.Context, requested []string) (conn.Authorization, error) {
+	req := a.req.Swap(nil)
+	if req == nil {
+		return conn.Authorization{}, fmt.Errorf("server: the connect authorizer is single use and has already answered (FR-22)")
+	}
+	return a.srv.authorize(ctx, a.conn, *req, requested)
 }
 
 // authorize turns one connection's cookie and its requested channels into the gateway's

@@ -118,6 +118,20 @@ type Options struct {
 	// assert a retry schedule exactly instead of sleeping through it
 	// (docs/14-coding-standards.md §2). Default time.After.
 	After func(time.Duration) <-chan time.Time
+
+	// seams are the in-package test hooks. They are unexported, so no caller outside this
+	// package can reach them and no production path can set one.
+	seams seams
+}
+
+// seams are the injection points this package's own tests use to order a shutdown
+// deterministically. docs/14-coding-standards.md §2: code that cannot be tested without a
+// sleep needs a seam, not the test a delay.
+type seams struct {
+	// closerExiting runs on the closer goroutine once the hub's context has ended and it
+	// has committed to returning, while Close is still waiting for it. It is the window
+	// in which a close enqueued by any other goroutine used to be abandoned.
+	closerExiting func()
 }
 
 // Hub is the channel registry and the local fan-out path.
@@ -146,6 +160,7 @@ type Hub struct {
 	retryMin   time.Duration
 	retryMax   time.Duration
 	after      func(time.Duration) <-chan time.Time
+	seams      seams
 
 	// mu guards every map below, and it is always taken before any connection's own
 	// lock — never the reverse (M3, docs/09-internals.md §4.4). Two paths acquiring them
@@ -208,6 +223,27 @@ type Hub struct {
 	// closing inline deadlocks (docs/09-internals.md §4.3, §4.5).
 	closeq chan Sink
 
+	// closeMu guards closeDone and every registration on closers. It is the whole of the
+	// fix for Close racing enqueueClose: Add on a WaitGroup whose counter is zero, while
+	// another goroutine is inside Wait on it, is "sync: WaitGroup misuse" — a panic,
+	// during shutdown, taking every connection on the replica with it. Attach, Subscribe,
+	// Unsubscribe and controlUnsubscribe all reach enqueueClose, so "do not call it
+	// concurrently with Close" was never a rule a caller could keep.
+	//
+	// It is taken only on the slow-consumer path, never on delivery, and it is held
+	// across nothing but a flag read and a non-blocking send (C7).
+	closeMu sync.Mutex
+
+	// closeDone reports that Close has stopped waiting. After it is set, a close is
+	// performed inline by whoever enqueued it: there is no goroutine left to hand it to,
+	// and dropping it would leave a connection open with nothing to end it.
+	closeDone bool
+
+	// closers counts the goroutines the overflow path spawns. It is separate from wg
+	// because wg is what Close waits on first, and a group cannot be safely added to
+	// while it is being waited on.
+	closers sync.WaitGroup
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -242,6 +278,7 @@ func New(ctx context.Context, b bus.Bus, opts Options) *Hub {
 	if opts.After == nil {
 		opts.After = time.After
 	}
+	seams := opts.seams
 	if len(opts.Namespaces) == 0 {
 		// M11: without the built-in block a gateway configured only from the environment
 		// starts cleanly, reports healthy, and refuses every single subscribe.
@@ -264,6 +301,7 @@ func New(ctx context.Context, b bus.Bus, opts Options) *Hub {
 		retryMin:   opts.RetryMin,
 		retryMax:   opts.RetryMax,
 		after:      opts.After,
+		seams:      seams,
 		channels:   make(map[string]map[Sink]struct{}),
 		subs:       make(map[Sink]map[string]struct{}),
 		users:      make(map[string]map[Sink]struct{}),
@@ -283,16 +321,48 @@ func New(ctx context.Context, b bus.Bus, opts Options) *Hub {
 	return h
 }
 
-// Close stops the reconciler and the closer and waits for them to exit. It is idempotent
-// and returns nothing, because nothing it does can fail: the bus is not the hub's to
-// close, and the registry needs no teardown — connections are ended by the drain path
-// (docs/09-internals.md §8) before the hub goes away.
+// Close stops the reconciler and the closer, performs every close still outstanding, and
+// waits for all of it. It is idempotent and returns nothing, because nothing it does can
+// fail: the bus is not the hub's to close, and the registry needs no teardown —
+// connections are ended by the drain path (docs/09-internals.md §8) before the hub goes
+// away.
 //
 // It must not be called concurrently with Dispatch: the caller stops its dispatch workers
-// first, exactly as it stops accepting upgrades before draining.
+// first, exactly as it stops accepting upgrades before draining. It may be called
+// concurrently with everything else. That is not a courtesy: Attach, Subscribe,
+// Unsubscribe and controlUnsubscribe all reach enqueueClose, so a rule saying otherwise
+// would have to be kept by every caller of four methods, on a path that only runs when a
+// connection is already misbehaving.
+//
+// The order is the whole of it:
+//
+//  1. Cancel, and wait for the reconciler and the closer.
+//  2. Announce, under closeMu, that nothing more may be handed to either. From here
+//     enqueueClose does the work inline, so no close is dropped and nothing registers on
+//     a WaitGroup that is already being waited on — which is the panic this ordering
+//     exists to make impossible.
+//  3. Wait for the overflow closers spawned before that announcement.
+//  4. Perform the closes still sitting in the queue. The closer goroutine returns on
+//     ctx.Done and used to abandon up to CloserQueue of them, which is a connection left
+//     open with nothing left to close it.
 func (h *Hub) Close() {
 	h.cancel()
 	h.wg.Wait()
+
+	h.closeMu.Lock()
+	h.closeDone = true
+	h.closeMu.Unlock()
+
+	h.closers.Wait()
+
+	for {
+		select {
+		case s := <-h.closeq:
+			h.closeSlow(s)
+		default:
+			return
+		}
+	}
 }
 
 // ControlKey returns the bus key of the reserved control channel, {bus.prefix}_control.
@@ -362,6 +432,25 @@ func (h *Hub) registerLocked(s Sink) error {
 	return nil
 }
 
+// reindexLocked refiles a registered connection under its current user id, and reports
+// whether it is registered at all. The caller holds the write lock.
+//
+// The refiling is necessary because Add runs at the upgrade, when Sink.User is still
+// empty, and the application names the user only later: a connection left filed under ""
+// for its whole life breaks revocation in the quietest possible way, because a control
+// disconnect naming the real user reaches nothing and reports success (FR-18).
+//
+// It creates nothing, and that is the point. registerLocked's maps are the difference
+// between a connection that exists and one that does not; recreating them for a Sink that
+// Remove has already dropped is the resurrection M4 forbids.
+func (h *Hub) reindexLocked(s Sink) bool {
+	if _, ok := h.subs[s]; !ok {
+		return false
+	}
+	h.indexUserLocked(s)
+	return true
+}
+
 // indexUserLocked files s under its current user id, moving it out of whatever bucket it
 // was in. The caller holds the write lock.
 func (h *Hub) indexUserLocked(s Sink) {
@@ -393,7 +482,7 @@ func (h *Hub) dropFromUserLocked(s Sink, user string) {
 	delete(h.userOf, s)
 }
 
-// Attach registers a connection and takes its connect-frame subscriptions in one critical
+// Attach takes a registered connection's connect-frame subscriptions in one critical
 // section, then queues the reply the ack callback builds — still under the same lock.
 //
 // It is the connect path of docs/03-client-protocol.md §4.1 and the widest case of M15's
@@ -413,11 +502,17 @@ func (h *Hub) dropFromUserLocked(s Sink, user string) {
 // ack runs under the write lock and MUST NOT call back into the hub, which would
 // deadlock. Encoding a frame is what it is for, and that is what internal/conn does.
 //
-// A client id already held by a different connection registers nothing and grants
-// nothing: overwriting the index entry would leave a live connection unreachable by a
-// control disconnect (FR-18), and ids are 16 hex characters from crypto/rand, so this
-// cannot happen by accident. Callers that need to see that refusal call Add first, which
-// also makes the connection targetable by control before its connect frame arrives.
+// It registers nothing. Add does that, at the upgrade, which is also what makes a
+// connection targetable by a control disconnect before its connect frame arrives (FR-18);
+// a connection that is not registered when Attach runs is granted nothing, and ack is
+// called with an empty list.
+//
+// That is the whole of the M4 invariant ErrNotRegistered exists for. A hub that
+// registered here could not tell a connection that was never added from one that close
+// has just deregistered — and the second is a resurrection: a reader goroutine blocked in
+// the connect webhook while SIGTERM closes its connection, answered 200, and back into
+// the channel map goes a dead connection that nothing will remove again, so fan-out
+// writes to it forever and the refcount never reaches zero.
 //
 // It never blocks and never waits for the bus.
 func (h *Hub) Attach(s Sink, channels []string, ack func(granted []string) *proto.Frame) {
@@ -425,10 +520,11 @@ func (h *Hub) Attach(s Sink, channels []string, ack func(granted []string) *prot
 	changed := false
 
 	h.mu.Lock()
-	// The error is deliberately not propagated: Attach answers a connect frame, and there
-	// is no close code for "the gateway assigned a duplicate client id" — the connection
-	// is simply granted nothing and holds nothing.
-	if err := h.registerLocked(s); err == nil {
+	// An unregistered connection is granted nothing, and that is not reported: Attach
+	// answers a connect frame, and there is no close code for "the gateway assigned a
+	// duplicate client id" or for "this connection was closed while the application was
+	// deciding". The connection is simply granted nothing and holds nothing.
+	if h.reindexLocked(s) {
 		for _, channel := range channels {
 			if h.admit(channel) != nil {
 				continue

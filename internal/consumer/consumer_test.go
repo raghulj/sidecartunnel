@@ -62,6 +62,59 @@ func TestConsumer_MalformedEnvelopeIsDroppedAndCounted(t *testing.T) {
 	}
 }
 
+// TestConsumer_MalformedJSONNeverLogsAPayloadByte_NFR7: the comment above deliver claims
+// the payload is never logged, and it was not true.
+//
+// hub.Dispatch wraps json.Unmarshal's error, and a *json.SyntaxError reads
+// `invalid character 'Z' looking for beginning of value` — where Z is one byte of the
+// publisher's payload, chosen by whoever published it. NFR-7 is absolute: no level, not
+// even debug, and not one byte. The reason still has to be logged, so the offset is kept
+// and the character is not.
+func TestConsumer_MalformedJSONNeverLogsAPayloadByte_NFR7(t *testing.T) {
+	f := newFixture(t, 1, 0)
+	s := newTestSink("c1", "u-7")
+	f.subscribe(t, s, "room-4410")
+
+	f.publish(t, "st:room-4410", []byte(`{"event":"x","data":Z}`))
+	f.publish(t, "st:room-4410", []byte(`{"event":"x","data":{}}`))
+	s.waitFrame(t)
+
+	logs := f.logs.String()
+	if !strings.Contains(logs, `"reason":"malformed"`) {
+		t.Fatalf("the drop was not logged, so the assertion below is vacuous:\n%s", logs)
+	}
+	if strings.Contains(logs, "'Z'") {
+		t.Fatalf("a byte of the payload reached the log (NFR-7):\n%s", logs)
+	}
+	// Still diagnosable: an operator has to be able to tell "not JSON" from "no event".
+	if !strings.Contains(logs, "offset") {
+		t.Fatalf("the drop reason says nothing about why the envelope did not decode:\n%s", logs)
+	}
+}
+
+// TestConsumer_MalformedControlNeverLogsAPayloadByte_NFR7 is the same leak on the control
+// channel, where it is logged at warn rather than debug. Anyone who can publish to Redis
+// can publish to the control key, so the byte in the message is attacker-chosen.
+func TestConsumer_MalformedControlNeverLogsAPayloadByte_NFR7(t *testing.T) {
+	f := newFixture(t, 1, 0)
+	s := newTestSink("c1", "u-7")
+	f.subscribe(t, s)
+
+	// The valid disconnect behind it is the synchronisation point: the single control
+	// goroutine cannot reach it until the rejected message has been logged and counted.
+	f.publish(t, f.hub.ControlKey(), []byte(`{"ts":1,"body":Z}`))
+	f.publish(t, f.hub.ControlKey(), sign(testSecret, testNow, `{"action":"disconnect","user":"u-7"}`))
+	s.waitClose(t)
+
+	logs := f.logs.String()
+	if !strings.Contains(logs, `"reason":"malformed"`) {
+		t.Fatalf("the rejection was not logged, so the assertion below is vacuous:\n%s", logs)
+	}
+	if strings.Contains(logs, "'Z'") {
+		t.Fatalf("a byte of the control payload reached the log (NFR-7):\n%s", logs)
+	}
+}
+
 // TestConsumer_OversizeEnvelopeIsDroppedAndCounted_FR14 is FR-14: an envelope larger than
 // limits.max_message_size is dropped and logged once with the channel name and reason
 // "oversize". FR-14 is the one requirement whose acceptance criterion is the log line

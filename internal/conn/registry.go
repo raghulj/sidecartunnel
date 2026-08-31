@@ -47,7 +47,8 @@ type Sink interface {
 
 	// Send queues one encoded frame and reports whether it was accepted. It never blocks;
 	// false means the outbound queue was full and the caller must hand this sink to the
-	// closer goroutine rather than retrying or waiting (FR-15).
+	// closer goroutine rather than retrying or waiting (FR-15). A closed connection
+	// reports true and drops the frame: it is not backpressure and it needs no closing.
 	Send(f *proto.Frame) bool
 
 	// Close ends the connection with a websocket close code and a short reason. It is
@@ -73,9 +74,9 @@ type Sink interface {
 // Errors are inspected with errors.As for *CommandError; anything else is reported to the
 // client as proto.ErrInternal.
 type Registry interface {
-	// Attach registers s and subscribes it to channels, which the caller has already
-	// grant-checked, deduplicated and capped. It then calls ack with the channels it
-	// actually took — an implementation may omit one, for an unknown namespace, and
+	// Attach subscribes s to channels, which the caller has already grant-checked,
+	// deduplicated and capped. It then calls ack with the channels it actually took — an
+	// implementation may omit one, for an unknown namespace, and
 	// docs/03-client-protocol.md §4.1 says an omitted channel is left out of the reply
 	// rather than failing the whole connect — and queues the returned frame, if any,
 	// while still holding its lock.
@@ -83,6 +84,16 @@ type Registry interface {
 	// One call rather than a loop of Subscribe is deliberate: it is one lock acquisition,
 	// and it leaves no window in which a push for a just-subscribed channel could
 	// overtake the connect reply that announces it (M15).
+	//
+	// It registers nothing. A connection is registered before its connect frame arrives —
+	// internal/server does it at the upgrade, so a control disconnect can reach the
+	// connection from the moment it exists (FR-18) — and an implementation that also
+	// registered here could not tell a connection that was never added from one that
+	// close has just deregistered. The second is a resurrection: SIGTERM closes a
+	// connection whose reader is blocked in Authorize, the application then answers 200,
+	// and the registry takes subscriptions for a connection nothing will remove again
+	// (docs/13-review-findings.md M4). An unregistered sink is granted nothing, and ack
+	// is called with an empty list.
 	Attach(s Sink, channels []string, ack func(granted []string) *proto.Frame)
 
 	// Subscribe adds one channel for s and queues ack under the same lock. It returns a
@@ -148,10 +159,21 @@ type Authorization struct {
 
 // Authorizer obtains the authorization for one connection.
 //
-// It is per-connection and closes over that request's Cookie header, which is why this
-// package never sees a cookie and cannot retain one: FR-22 requires the gateway to hold
-// no cookie past the connect call, and the cleanest way to guarantee that is for the
-// value never to enter the type that outlives the call.
+// It is per-connection and closes over that request's Cookie header, which is the only
+// place a cookie exists once the handshake is over. FR-22 requires the gateway to hold no
+// cookie past the connect call, and two things enforce that rather than one convention:
+//
+//   - A Conn takes this reference exactly once, in doConnect, and swaps its own field for
+//     nil in the same act — so the Authorizer is unreachable from the connection the
+//     moment authorization returns, and the swap doubles as the "connect may be sent
+//     once" guard, which is what stops the drop being quietly removed later.
+//   - The implementation must itself release the cookie when the call returns.
+//     internal/server's does: the request lives behind an atomic pointer that Authorize
+//     swaps for nil before it calls the webhook, so a second call has nothing to send and
+//     the value is garbage the instant the call unwinds.
+//
+// Between them, a core dump of a process holding 20,000 connections yields no session
+// cookies, which is the whole point of the arrangement (docs/13-review-findings.md S3).
 //
 // Implementations must honour the context, which carries app.connect_timeout. Its
 // expiry is a failure, not a refusal, and closes with proto.CloseAuthUnavailable.
@@ -160,7 +182,8 @@ type Authorization struct {
 // it contains no cookie, no Authorization header and no webhook body.
 type Authorizer interface {
 	// Authorize calls the application and returns its answer, or ErrUnauthorized wrapped
-	// when the application refused.
+	// when the application refused. It is called at most once per connection, and an
+	// implementation must release its cookie before it returns (FR-22).
 	//
 	// requested is the connect frame's subs, forwarded to the application as
 	// channels_requested (docs/04-integration.md §1.1). It takes an argument rather than

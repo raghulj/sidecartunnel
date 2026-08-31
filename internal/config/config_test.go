@@ -143,8 +143,6 @@ func TestLoad_Defaults(t *testing.T) {
 		{"limits.max_frame_size", cfg.Limits.MaxFrameSize, 16384},
 		{"limits.max_channel_length", cfg.Limits.MaxChannelLength, 255},
 
-		{"control.refresh_spread", cfg.Control.RefreshSpread.Duration(), 60 * time.Second},
-
 		{"log.level", cfg.Log.Level, "info"},
 		{"log.format", cfg.Log.Format, "json"},
 	}

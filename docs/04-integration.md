@@ -338,7 +338,7 @@ asymmetry was indefensible. Redis remains a trust boundary for message *publishi
 | Action | Effect |
 |---|---|
 | `disconnect` | Close matching connections with 3501, `reconnect: false`. |
-| `refresh` | Close matching connections with 3503, `reconnect: true`, spread over `control.refresh_spread`. They reconnect and re-authorize with a current cookie. |
+| `refresh` | Close matching connections with 3503, `reconnect: true`, with a `retry_after` spread over `server.drain_spread`. They reconnect and re-authorize with a current cookie. |
 | `unsubscribe` | Drop matching subscriptions and send each client an `unsubscribed` push. `channel` may be a glob. |
 
 `user` and `client` are matched **exactly, never as globs**, and every action MUST name

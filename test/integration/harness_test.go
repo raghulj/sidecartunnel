@@ -566,7 +566,7 @@ func testConfig(prefix, connectURL, webhookSecret, controlSecret string) *config
 			MaxFrameSize:            16384,
 			MaxChannelLength:        255,
 		},
-		Control: config.Control{Secret: controlSecret, RefreshSpread: config.Duration(60 * time.Second)},
+		Control: config.Control{Secret: controlSecret},
 		Log:     config.Log{Level: "warn", Format: "text"},
 	}
 }

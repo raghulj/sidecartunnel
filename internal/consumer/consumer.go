@@ -2,6 +2,9 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -239,7 +242,9 @@ func (c *Consumer) dispatch(ctx context.Context, in <-chan bus.Message) {
 //
 // A dropped envelope is logged with its channel and the reason, never with its payload:
 // an envelope that failed to decode is still an application's data, and the log is the
-// wrong place for it (docs/04-integration.md §2.2, NFR-7).
+// wrong place for it (docs/04-integration.md §2.2, NFR-7). The reason goes through
+// safeError, because encoding/json's own message quotes the byte it choked on and that
+// byte belongs to the publisher — the claim in this comment was false until it did.
 //
 // The oversize check is FR-14 and it is here rather than in the hub because the hub is
 // handed a message that has already been accepted: this is the one place that knows
@@ -254,10 +259,33 @@ func (c *Consumer) deliver(msg bus.Message) {
 	if err := c.hub.Dispatch(msg); err != nil {
 		c.malformed.Add(1)
 		c.log.Debug("bus message dropped", "channel", msg.Channel, "reason", string(ReasonMalformed),
-			"err", err)
+			"err", safeError(err))
 		return
 	}
 	c.dispatched.Add(1)
+}
+
+// safeError renders an error for a log line with no byte of the message in it (NFR-7).
+//
+// encoding/json's *json.SyntaxError reads `invalid character 'Z' looking for beginning of
+// value`, where Z is one byte of whatever was published: a publisher's payload on the
+// fan-out path, and anything at all on the control channel, which is unauthenticated
+// until its signature is checked. The offset says where without saying what, which is the
+// part an operator needs — it separates "not JSON at all" from "no event field", and
+// those have different causes.
+//
+// It replaces the whole chain rather than the leaf, because by the time the error reaches
+// here the leaf's text has already been formatted into every wrapper above it. Nothing
+// useful is lost: the channel is a separate field on the same line.
+//
+// Only *json.SyntaxError carries a byte of the document. *json.UnmarshalTypeError names a
+// JSON type and one of our own field names, and is left alone.
+func safeError(err error) string {
+	var syntax *json.SyntaxError
+	if errors.As(err, &syntax) {
+		return fmt.Sprintf("not valid JSON: syntax error at byte offset %d", syntax.Offset)
+	}
+	return err.Error()
 }
 
 // control verifies and applies control messages on its own goroutine (FR-23).
@@ -288,7 +316,7 @@ func (c *Consumer) apply(msg bus.Message) {
 	cmd, reason, err := Verify(c.secret, c.now(), msg.Payload)
 	if err != nil {
 		c.count(reason)
-		c.log.Warn("control message rejected", "reason", string(reason), "err", err)
+		c.log.Warn("control message rejected", "reason", string(reason), "err", safeError(err))
 		return
 	}
 	if err := c.hub.Control(cmd); err != nil {

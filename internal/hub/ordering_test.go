@@ -160,6 +160,9 @@ func TestUnsubscribe_QueuesTheAckInTheMutatingCriticalSection_M15(t *testing.T) 
 func TestAttach_QueuesTheConnectReplyInTheMutatingCriticalSection_M15(t *testing.T) {
 	h := newTestHub(t, newBus())
 	s := newOrderSink(h, "c1")
+	if err := h.Add(s); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	var granted []string
 	h.Attach(s, []string{"room-1", "room-2"}, func(g []string) *proto.Frame {

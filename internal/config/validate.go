@@ -55,7 +55,14 @@ func validateServer(s *Server) error {
 	if err := durRange("server.drain_timeout", s.DrainTimeout, time.Second, 300*time.Second); err != nil {
 		return err
 	}
-	if err := durNonNegative("server.drain_spread", s.DrainSpread); err != nil {
+	// Ranged, not merely non-negative. Every other duration in docs/08-config.md §3 has
+	// a documented range and this one had none, so `drain_spread: 500us` validated,
+	// started cleanly, and handed the connection layer a window it rounds to zero
+	// milliseconds — the whole spread gone, silently, at exactly the moment it matters.
+	// The floor is 1s because a spread finer than that is not a spread; the ceiling is
+	// 300s, matching drain_timeout, because it is also the largest retry_after a
+	// conforming client will honour (docs/03-client-protocol.md §8.2).
+	if err := durRange("server.drain_spread", s.DrainSpread, time.Second, 300*time.Second); err != nil {
 		return err
 	}
 	if err := durPositive("server.read_header_timeout", s.ReadHeaderTimeout); err != nil {
@@ -67,6 +74,48 @@ func validateServer(s *Server) error {
 		}
 	}
 	return validateListen("server.listen", s.Listen)
+}
+
+// RedactedURL returns raw with any userinfo replaced by "redacted", for an error or a log
+// line that has to name a configured URL.
+//
+// A configured URL is a credential carrier: `redis://:password@host` is the documented way
+// to give the bus a password, and `https://gw:hunter2@webapp.internal/_st/connect` is an
+// ordinary shape for an internal endpoint. Naming the URL is also the most useful thing to
+// say when one is wrong, so the answer is to redact rather than to go silent.
+//
+// net/http redacts userinfo from its own *url.Error for exactly this reason, which is the
+// trap: hand-rolled wrapping that does not redact produces a leak that looks like Go's
+// output and is not (NFR-7, docs/13-review-findings.md).
+//
+// A value that does not parse is reported as a placeholder rather than echoed, because the
+// reason it does not parse may be the credential inside it.
+func RedactedURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable URL]"
+	}
+	if parsed.User != nil {
+		parsed.User = url.User("redacted")
+	}
+	return parsed.String()
+}
+
+// urlErrorCause returns a *url.Error's underlying reason, discarding the URL it quotes.
+//
+// url.Parse reports `parse "https://gw:hunter2@host/x": …`, so wrapping its error is how
+// the value of a key we are refusing ends up in a startup log verbatim. The cause alone —
+// "missing protocol scheme", "invalid control character in URL" — is the part an operator
+// acts on, and it names nothing.
+func urlErrorCause(err error) string {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return uerr.Err.Error()
+	}
+	// coverage: url.Parse returns nothing but *url.Error, and this is the only caller.
+	// The fallback exists so that a future caller passing some other error gets its
+	// message rather than an empty string.
+	return err.Error()
 }
 
 // validateOrigin enforces exact origins. No wildcards and no suffix matching: browsers do
@@ -107,10 +156,25 @@ func validateApp(a *App) error {
 	}
 	parsed, err := url.Parse(a.ConnectURL)
 	if err != nil {
-		return fmt.Errorf("app.connect_url %q is not a URL: %w", a.ConnectURL, err)
+		// urlErrorCause, not err: url.Parse wraps its reason in a *url.Error whose text
+		// quotes the whole input, so printing it echoes any credential in the value of
+		// the key we are refusing (NFR-7).
+		return fmt.Errorf("app.connect_url is not a URL: %s", urlErrorCause(err))
+	}
+	if parsed.User != nil {
+		// Checked before anything quotes the value, and the message quotes nothing.
+		//
+		// https://gw:hunter2@webapp.internal/_st/connect is an ordinary shape for an
+		// internal endpoint, and every timed-out connect formats this URL into a warn
+		// line. The webhook is already authenticated to the application by the HMAC over
+		// app.webhook_secrets (FR-3), so userinfo here buys nothing and costs a password
+		// in the logs of a process that also sees every user's session cookie (NFR-7).
+		return errors.New("app.connect_url carries credentials in its userinfo; " +
+			"remove them — the connect webhook is authenticated by app.webhook_secrets, " +
+			"and a URL in an error or a log line must not be a password (FR-3, NFR-7)")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
-		return fmt.Errorf("app.connect_url %q must be an absolute http or https URL (FR-3)", a.ConnectURL)
+		return fmt.Errorf("app.connect_url %q must be an absolute http or https URL (FR-3)", RedactedURL(a.ConnectURL))
 	}
 	if len(a.WebhookSecrets) == 0 {
 		return errors.New("app.webhook_secrets is empty; the connect webhook must be signed (FR-3)")
@@ -167,12 +231,15 @@ func validateBus(b *Bus) error {
 		if b.URL == "" {
 			return errors.New("bus.url is required when bus.kind is redis (docs/08-config.md §3)")
 		}
+		// redis://:password@host is the documented way to give the bus a password, so
+		// the userinfo is accepted here — but never echoed. Same rule as
+		// app.connect_url, opposite disposition, and for the same reason (NFR-7).
 		parsed, err := url.Parse(b.URL)
 		if err != nil {
-			return fmt.Errorf("bus.url %q is not a URL: %w", b.URL, err)
+			return fmt.Errorf("bus.url is not a URL: %s", urlErrorCause(err))
 		}
 		if parsed.Scheme != "redis" && parsed.Scheme != "rediss" && parsed.Scheme != "unix" {
-			return fmt.Errorf("bus.url %q must be a redis://, rediss:// or unix:// URL", b.URL)
+			return fmt.Errorf("bus.url %q must be a redis://, rediss:// or unix:// URL", RedactedURL(b.URL))
 		}
 	}
 	if err := durPositive("bus.dial_timeout", b.DialTimeout); err != nil {
@@ -327,7 +394,7 @@ func validateControl(c *Control) error {
 		return fmt.Errorf("control.secret is %d bytes, want at least %d (docs/08-config.md §3)",
 			len(c.Secret), minSecretBytes)
 	}
-	return durNonNegative("control.refresh_spread", c.RefreshSpread)
+	return nil
 }
 
 // validateListen checks that addr is a usable host:port, naming key on failure.

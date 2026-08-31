@@ -67,6 +67,21 @@ func TestValidate(t *testing.T) {
 		{name: "server.drain_timeout too small", mut: func(c *Config) { c.Server.DrainTimeout = Duration(0) }, want: "server.drain_timeout"},
 		{name: "server.drain_timeout too large", mut: func(c *Config) { c.Server.DrainTimeout = Duration(301 * time.Second) }, want: "server.drain_timeout"},
 		{name: "server.drain_spread negative", mut: func(c *Config) { c.Server.DrainSpread = Duration(-time.Second) }, want: "server.drain_spread"},
+		// A spread below a millisecond is not a spread: the consuming code works in
+		// whole milliseconds, so 500us is arithmetically zero. Every neighbouring
+		// duration key has a documented range and this one did not, so it started
+		// cleanly and produced a value the connection layer cannot express.
+		{name: "server.drain_spread sub-millisecond", mut: func(c *Config) {
+			c.Server.DrainSpread = Duration(500 * time.Microsecond)
+		}, want: "server.drain_spread"},
+		{name: "server.drain_spread zero", mut: func(c *Config) { c.Server.DrainSpread = Duration(0) }, want: "server.drain_spread"},
+		{name: "server.drain_spread too large", mut: func(c *Config) {
+			c.Server.DrainSpread = Duration(301 * time.Second)
+		}, want: "server.drain_spread"},
+		{name: "server.drain_spread at the floor", mut: func(c *Config) { c.Server.DrainSpread = Duration(time.Second) }},
+		{name: "server.drain_spread at the ceiling", mut: func(c *Config) {
+			c.Server.DrainSpread = Duration(300 * time.Second)
+		}},
 		{name: "server.read_header_timeout zero", mut: func(c *Config) { c.Server.ReadHeaderTimeout = Duration(0) }, want: "server.read_header_timeout"},
 		{name: "server.trusted_proxies not a cidr", mut: func(c *Config) {
 			c.Server.TrustedProxies = []string{"10.0.0.1"}
@@ -82,6 +97,20 @@ func TestValidate(t *testing.T) {
 		{name: "app.connect_url wrong scheme", mut: func(c *Config) { c.App.ConnectURL = "ws://webapp:5000/x" }, want: "app.connect_url"},
 		{name: "app.connect_url without host", mut: func(c *Config) { c.App.ConnectURL = "http:///x" }, want: "app.connect_url"},
 		{name: "app.connect_url unparseable", mut: func(c *Config) { c.App.ConnectURL = "http://%zz/" }, want: "app.connect_url"},
+		// NFR-7. https://gw:hunter2@webapp.internal/_st/connect is an ordinary shape for
+		// an internal endpoint, and the gateway formats the configured URL into its own
+		// errors. Refused at startup, and refused without quoting the value — including
+		// on the unparseable path, where url.Parse's own error text echoes the whole
+		// string back, credentials and all.
+		{name: "app.connect_url carries credentials", mut: func(c *Config) {
+			c.App.ConnectURL = "https://gw:hunter2@webapp.internal/_st/connect"
+		}, want: "app.connect_url", notWant: "hunter2"},
+		{name: "app.connect_url carries a bare username", mut: func(c *Config) {
+			c.App.ConnectURL = "https://gw@webapp.internal/_st/connect"
+		}, want: "app.connect_url", notWant: "gw@"},
+		{name: "app.connect_url unparseable with credentials", mut: func(c *Config) {
+			c.App.ConnectURL = "ht tp://gw:hunter2@webapp.internal/_st/connect"
+		}, want: "app.connect_url", notWant: "hunter2"},
 		{name: "app.webhook_secrets empty", mut: func(c *Config) { c.App.WebhookSecrets = nil }, want: "app.webhook_secrets"},
 		{name: "app.webhook_secrets too short", mut: func(c *Config) {
 			c.App.WebhookSecrets = []string{"tooshort"}
@@ -118,6 +147,16 @@ func TestValidate(t *testing.T) {
 		{name: "bus.url missing for redis", mut: func(c *Config) { c.Bus.URL = "" }, want: "bus.url"},
 		{name: "bus.url wrong scheme", mut: func(c *Config) { c.Bus.URL = "http://redis:6379/0" }, want: "bus.url"},
 		{name: "bus.url unparseable", mut: func(c *Config) { c.Bus.URL = "redis://%zz" }, want: "bus.url"},
+		// redis://:password@host is the documented way to give the bus a password, so
+		// unlike app.connect_url the userinfo is accepted — but it must not reach the
+		// error text of a key that is wrong for some other reason (NFR-7).
+		{name: "bus.url wrong scheme with a password", mut: func(c *Config) {
+			c.Bus.URL = "http://:hunter2@redis:6379/0"
+		}, want: "bus.url", notWant: "hunter2"},
+		{name: "bus.url unparseable with a password", mut: func(c *Config) {
+			c.Bus.URL = "red is://:hunter2@redis:6379/0"
+		}, want: "bus.url", notWant: "hunter2"},
+		{name: "bus.url with a password", mut: func(c *Config) { c.Bus.URL = "redis://:hunter2@redis:6379/0" }},
 		{name: "bus.url rediss", mut: func(c *Config) { c.Bus.URL = "rediss://redis:6379/0" }},
 		{name: "bus.dial_timeout zero", mut: func(c *Config) { c.Bus.DialTimeout = Duration(0) }, want: "bus.dial_timeout"},
 		{name: "bus.reconnect_min zero", mut: func(c *Config) { c.Bus.ReconnectMin = Duration(0) }, want: "bus.reconnect_min"},
@@ -229,7 +268,6 @@ func TestValidate(t *testing.T) {
 		{name: "control.secret too short", mut: func(c *Config) {
 			c.Control.Secret = "0123456789abcdef0123456789abcde"
 		}, want: "control.secret", notWant: "0123456789abcdef0123456789abcde"},
-		{name: "control.refresh_spread negative", mut: func(c *Config) { c.Control.RefreshSpread = Duration(-time.Second) }, want: "control.refresh_spread"},
 
 		// --- server.listen ---
 		//
@@ -283,5 +321,31 @@ func TestValidate_ValidBaseline(t *testing.T) {
 	cfg := loadMinimal(t)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate = %v, want no error", err)
+	}
+}
+
+// TestRedactedURL is the NFR-7 helper on its own, because every caller of it is a place a
+// credential would otherwise reach a log line, and "some other package's test happens to
+// cover this branch" is not a property worth depending on.
+func TestRedactedURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"no credentials is unchanged", "https://webapp.internal/_st/connect", "https://webapp.internal/_st/connect"},
+		{"password", "https://gw:hunter2@webapp.internal/_st/connect", "https://redacted@webapp.internal/_st/connect"},
+		{"username alone", "https://gw@webapp.internal/_st/connect", "https://redacted@webapp.internal/_st/connect"},
+		{"redis password with no username", "redis://:hunter2@redis:6379/0", "redis://redacted@redis:6379/0"},
+		// Not echoed: the reason it does not parse may be the credential in it.
+		{"unparseable", "ht tp://gw:hunter2@webapp.internal/x", "[unparseable URL]"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactedURL(tt.raw); got != tt.want {
+				t.Fatalf("RedactedURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
 	}
 }

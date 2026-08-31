@@ -121,6 +121,27 @@ type Options struct {
 	// way to force a collision the branch that protects control targeting (FR-18) could
 	// never be exercised.
 	ClientID func() string
+
+	// seams are the in-package test hooks. They are unexported, so no caller outside this
+	// package can reach them and no production path can set one.
+	seams seams
+}
+
+// seams are the injection points this package's own tests use to drive a race
+// deterministically. docs/14-coding-standards.md §2: a test may not sleep, and code that
+// cannot be tested without one needs a seam rather than the test needing a delay.
+//
+// Both of these exist for one race — a handshake admitted between reserve() and track(),
+// which the drain used to miss entirely — and both are nil everywhere else.
+type seams struct {
+	// afterReserve runs on the handshake goroutine after the connection has been built
+	// and immediately before it is tracked: the window itself.
+	afterReserve func()
+
+	// afterDrainSnapshot runs on the draining goroutine once draining has been set and
+	// the live set has been taken, which is the moment a connection can no longer appear
+	// in it.
+	afterDrainSnapshot func()
 }
 
 // Stats are a Server's cumulative counters, read by the drain log and by tests.
@@ -236,9 +257,20 @@ type Server struct {
 	http  *http.Server
 	bound atomic.Bool
 
-	// wg tracks one goroutine per live connection — the handler goroutine that becomes
-	// the reader. Drain waits on it, which is what makes FR-19's bound assertable.
-	wg sync.WaitGroup
+	// drained is closed by release when current reaches zero, and is how Drain waits for
+	// the handshakes still in flight (FR-19). It is nil while nobody is waiting.
+	//
+	// It is a channel guarded by mu rather than a sync.WaitGroup, and the difference is a
+	// crashed process. The WaitGroup was incremented in track, which runs after the
+	// upgrade, while Drain waited on it: a handshake that reserved its slot before the
+	// drain began and reached track after the counter had fallen to zero is
+	// "sync: WaitGroup misuse: Add called concurrently with Wait" — a panic, during
+	// SIGTERM, taking every other connection on the replica with it. Counting
+	// reservations under the same lock that sets draining cannot race: the increment and
+	// the decision to wait are in the same critical section.
+	drained chan struct{}
+
+	seams seams
 
 	stats counters
 }
@@ -308,6 +340,7 @@ func New(opts Options) (*Server, error) {
 		rates:              rates,
 		conns:              make(map[*conn.Conn]string),
 		users:              make(map[string]int),
+		seams:              opts.seams,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -413,6 +446,13 @@ func (s *Server) Drain(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
+	// From here the snapshot is fixed, and a handshake still inside the upgrade will
+	// never appear in it. track is what closes that connection instead, under the same
+	// lock that set draining above.
+	if s.seams.afterDrainSnapshot != nil {
+		s.seams.afterDrainSnapshot()
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, s.drainTimeout())
 	defer cancel()
 
@@ -438,13 +478,28 @@ func (s *Server) Drain(ctx context.Context) error {
 	return err
 }
 
-// wait blocks until every connection goroutine has returned, or the drain budget expires.
+// wait blocks until every admitted handshake has returned, or the drain budget expires.
+//
+// It waits on the reservation count, not on the connections Drain snapshotted, because
+// those are two different sets: a handshake that reserved its slot before the drain began
+// and completed its upgrade after it was never in the snapshot. Counting reservations
+// covers the whole of a handshake's life, from reserve to release, including the part
+// where there is no connection object yet.
 func (s *Server) wait(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
+	s.mu.Lock()
+	if s.current == 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.drained == nil {
+		s.drained = make(chan struct{})
+	}
+	// Shared, never replaced: SIGTERM and a cancelled context can both arrive, and two
+	// Drains that each installed their own channel would leave the first waiting on one
+	// nothing closes.
+	done := s.drained
+	s.mu.Unlock()
+
 	select {
 	case <-done:
 		return nil

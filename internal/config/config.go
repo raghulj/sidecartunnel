@@ -391,13 +391,6 @@ type Control struct {
 	//
 	// Never log this value.
 	Secret string `yaml:"secret"`
-
-	// RefreshSpread is the window over which a mass control refresh is spread. Default
-	// 60s.
-	//
-	// docs/13-review-findings.md C8 says 30s; docs/08-config.md §3 says 60s and is
-	// normative, so 60s.
-	RefreshSpread Duration `yaml:"refresh_spread"`
 }
 
 // Log configures logging output.

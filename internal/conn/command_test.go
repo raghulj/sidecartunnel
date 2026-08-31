@@ -578,3 +578,95 @@ func TestConnect_RequestedChannelsConferNoGrant_FR5(t *testing.T) {
 	r.sock.feed(map[string]any{"id": 2, "subscribe": map[string]any{"channel": "vault-1"}})
 	r.wantError(proto.ErrPermissionDenied)
 }
+
+// TestChannelName_PrintableASCIIOnly — docs/06-channels.md §1 is normative: a channel
+// name is "Printable ASCII, no whitespace, no control characters."
+//
+// Enforcing the length and refusing the empty string is not enforcing that rule. A client
+// granted "room-*" could subscribe to "room- \n admin", and the name then entered the hub
+// map, the desired set, a Redis SUBSCRIBE, the subscribe line the runbook greps
+// (docs/10-operations.md §7) and every sync reply. §2 requires names be human-readable
+// **because** they appear in logs, and a name carrying a newline forges log lines.
+func TestChannelName_PrintableASCIIOnly(t *testing.T) {
+	long := strings.Repeat("a", 256)
+	tests := []struct {
+		name    string
+		channel string
+		want    bool
+	}{
+		{"ordinary name", "room-4410", true},
+		{"every printable character but space", "!\"#$%&'()*+,-./09:;<=>?@AZ[\\]^_`az{|}~", true},
+		{"one character", "a", true},
+		{"at the length limit", strings.Repeat("a", 255), true},
+		{"empty", "", false},
+		{"over the length limit", long, false},
+		{"NUL", "room-\x00admin", false},
+		{"newline", "room- \n admin", false},
+		{"carriage return", "room-\radmin", false},
+		{"tab", "room-\tadmin", false},
+		{"space", "room- admin", false},
+		{"trailing space", "room-1 ", false},
+		{"DEL", "room-\x7f", false},
+		{"unit separator", "room-\x1f", false},
+		{"non-ASCII", "room-café", false},
+		// json.Unmarshal replaces an invalid byte with U+FFFD before this is reached, and
+		// that is non-ASCII too — but the rule is enforced on the bytes, not on what the
+		// decoder happened to leave behind.
+		{"invalid UTF-8", "room-\xff", false},
+		{"UTF-8 replacement character", "room-�", false},
+	}
+
+	c, err := New(Options{Socket: newFakeSocket(), Registry: newFakeRegistry(), Authorizer: okAuth(t, "u")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := c.wellFormed(tt.channel); got != tt.want {
+				t.Fatalf("wellFormed(%q) = %v, want %v", tt.channel, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSubscribe_MalformedChannelIsRefused_101 is the same rule where a client meets it:
+// error 101 with the connection left open, and nothing handed to the registry — a name
+// the gateway will not log is a name it must not subscribe to either.
+func TestSubscribe_MalformedChannelIsRefused_101(t *testing.T) {
+	const channel = "room- \n admin"
+	r := newRig(t, func(o *Options) { o.Authorizer = okAuth(t, "u", "room-*") })
+	r.connect()
+
+	r.sock.feed(map[string]any{"id": 2, "subscribe": map[string]any{"channel": channel}})
+	r.wantError(proto.ErrBadRequest)
+
+	r.sock.feed(map[string]any{"id": 3, "unsubscribe": map[string]any{"channel": channel}})
+	r.wantError(proto.ErrBadRequest)
+
+	if got := r.reg.Subscriptions(r.conn); len(got) != 0 {
+		t.Fatalf("subscriptions = %v, want none: a malformed name must never reach the registry", got)
+	}
+}
+
+// TestConnect_MalformedChannelsAreOmitted — on the connect frame the same names are
+// dropped rather than refused (docs/03-client-protocol.md §4.1), and they never reach the
+// connect webhook either: channels_requested is a hint the application has to parse, and
+// a control character in it is the gateway's problem to stop (NFR-4).
+func TestConnect_MalformedChannelsAreOmitted(t *testing.T) {
+	var requested []string
+	r := newRig(t, func(o *Options) {
+		o.Authorizer = AuthorizerFunc(func(_ context.Context, subs []string) (Authorization, error) {
+			requested = append([]string(nil), subs...)
+			return Authorization{User: "u", Grants: mustGrants(t, "room-*")}, nil
+		})
+	})
+
+	reply := r.connect("room-1", "room- \n admin", "room-\x00", "room-café")
+
+	if len(reply.Subs) != 1 {
+		t.Fatalf("subs = %v, want only room-1", reply.Subs)
+	}
+	if len(requested) != 1 || requested[0] != "room-1" {
+		t.Fatalf("channels_requested = %q, want only room-1", requested)
+	}
+}

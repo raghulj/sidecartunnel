@@ -115,9 +115,12 @@ Not per-commit. Run before a release and record the numbers in the PR.
 - **NFR-3.** 10,000 connect/disconnect cycles; assert goroutine count returns to within 5%
   of baseline. This catches the leak class that only shows up after a week of uptime.
 - **Storm.** 10,000 connections, kill the replica, measure concurrent requests at the stub
-  application with `drain_spread` at 60s, at 30s, and disabled. The model in
+  application with `drain_spread` at 60s, at 30s, and at its 1s floor. The model in
   `10-operations.md` §4 predicts ~7, ~13 and ~400 respectively; if reality disagrees, the
-  document is wrong and moves. This is the single most important load test — it is the only
+  document is wrong and moves. The third row used to read "disabled", which
+  `08-config.md` §3 no longer permits — a spread below a millisecond is arithmetically no
+  spread, so 1s is as close to disabled as the configuration goes, and it is the same
+  measurement. This is the single most important load test — it is the only
   one that exercises the failure that takes the *application* down rather than the gateway.
 
 ## 7. Gates

@@ -41,8 +41,11 @@ type Sink interface {
 	// f is shared with every other recipient of the same message. Neither the Sink nor
 	// anything downstream of it may modify f.Data.
 	//
-	// Send on a closed connection returns true or false without panicking; a race between
-	// fan-out and close is normal and must not be an error path.
+	// Send on a closed connection returns **true** and drops the frame: a race between
+	// fan-out and close is normal and must not be an error path. Returning false there
+	// would be indistinguishable from backpressure, and a drain would turn every
+	// connection it has just closed into another slow-consumer close of a connection that
+	// is already gone.
 	Send(f *proto.Frame) bool
 
 	// Close ends the connection: it sends a disconnect frame carrying code and reason if

@@ -218,6 +218,12 @@ func TestRegistry_DelegatesToTheHub(t *testing.T) {
 	h := newTestHubWithNamespaces(t, config.Namespace{Name: "room", RateLimit: "10/s"})
 	reg := newRegistry(context.Background(), h, map[string]rate{"room": defaultRate}, newFakeClock())
 	sink := &fakeSink{id: "c1", user: "u-1"}
+	// Registered at the upgrade, as serve does, because Attach registers nothing: a hub
+	// that registered there could not tell a connection that was never added from one
+	// close has just deregistered (docs/13-review-findings.md M4).
+	if err := h.Add(sink); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	var granted []string
 	reg.Attach(sink, []string{"room-1"}, func(g []string) *proto.Frame {

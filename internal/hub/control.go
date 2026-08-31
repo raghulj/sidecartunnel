@@ -151,9 +151,11 @@ func (h *Hub) Control(c Control) error {
 	case ActionDisconnect:
 		h.closeAll(targets, proto.CloseRevoked, orDefault(c.Reason, revokedReason))
 	case ActionRefresh:
-		// Spreading a mass refresh over control.refresh_spread is the connection
-		// layer's: it is expressed as retry_after in the disconnect frame, which Sink
-		// cannot carry (S5, docs/13-review-findings.md C8).
+		// Spreading the reconnects is the connection layer's, over server.drain_spread:
+		// it is expressed as retry_after in the disconnect frame, which Sink cannot carry
+		// (S5, docs/03-client-protocol.md §7.1). There is no second spread key — a
+		// refresh names exactly one user or client (C8), so it reaches at most
+		// limits.max_connections_per_user connections and cannot be a stampede.
 		h.closeAll(targets, proto.CloseExpired, orDefault(c.Reason, refreshReason))
 	default:
 		h.controlUnsubscribe(targets, c, pattern)

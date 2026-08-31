@@ -54,7 +54,9 @@ type Options struct {
 	Registry Registry
 
 	// Authorizer answers the connect webhook for this connection. It closes over the
-	// request's cookie, which is why a Conn never holds one (FR-22).
+	// request's cookie, so a Conn holds the reference only until the connect frame has
+	// used it and then drops it: nothing reachable from a live connection may hold a
+	// cookie (FR-22). It is called at most once.
 	Authorizer Authorizer
 
 	// Clock is the time source. Defaults to SystemClock.
@@ -131,9 +133,9 @@ type Options struct {
 // A Conn holds **no mutex at all**, which is the strongest available answer to the lock
 // ordering rule in docs/09-internals.md §4.4 and docs/13-review-findings.md M3: hub
 // before conn, never the reverse. There is no conn lock to invert. Its mutable state is
-// three atomics — grants, user and the closed flag — and its channels; the subscription
-// set that §2 sketches on the connection lives in the Registry, whose lock is the one
-// place it moves (docs/09-internals.md §4.2). A Conn never holds anything while sending
+// four atomics — grants, user, the closed flag and the single-use Authorizer — and its
+// channels; the subscription set that §2 sketches on the connection lives in the
+// Registry, whose lock is the one place it moves (docs/09-internals.md §4.2). A Conn never holds anything while sending
 // on a channel, and the only lock it is ever under is the Registry's, taken inside the
 // Registry methods it calls and never held across one of its own.
 //
@@ -148,8 +150,23 @@ type Conn struct {
 	log      *slog.Logger
 	sock     Socket
 	registry Registry
-	auth     Authorizer
 	clock    Clock
+
+	// auth is the Authorizer, held only until the connect frame has used it.
+	//
+	// It is a pointer that is swapped for nil rather than a plain field, because the
+	// Authorizer closes over the request's Cookie header and a Conn outlives the connect
+	// call by app.expires_in — 6h by default. FR-22 says the gateway must not retain the
+	// cookie beyond the connect call, and the only way to mean that structurally is for
+	// the last reference to it to be gone before doConnect returns. At 20,000
+	// connections holding a 1–4 KB session cookie each, the difference is whether a core
+	// dump of this process yields 20,000 replayable sessions
+	// (docs/13-review-findings.md S3).
+	//
+	// The swap is also the once-guard: a connect frame that finds it already taken is
+	// "already connected", so the drop cannot be removed without failing that rule's own
+	// test (docs/03-client-protocol.md §4.1).
+	auth atomic.Pointer[Authorizer]
 
 	handshakeTimeout time.Duration
 	connectTimeout   time.Duration
@@ -226,7 +243,6 @@ func New(opts Options) (*Conn, error) {
 		log:              orDefault(opts.Log, slog.New(slog.DiscardHandler)),
 		sock:             opts.Socket,
 		registry:         opts.Registry,
-		auth:             opts.Authorizer,
 		clock:            orDefault(opts.Clock, SystemClock()),
 		handshakeTimeout: positive(opts.HandshakeTimeout, defaultHandshakeTimeout),
 		connectTimeout:   positive(opts.ConnectTimeout, defaultConnectTimeout),
@@ -243,7 +259,21 @@ func New(opts Options) (*Conn, error) {
 		closing:          make(chan struct{}),
 		writerDone:       make(chan struct{}),
 	}
+	c.auth.Store(&opts.Authorizer)
 	return c, nil
+}
+
+// takeAuthorizer returns the Authorizer and drops the connection's reference to it, or
+// nil if it has already been taken.
+//
+// FR-22 in one line: the Authorizer closes over the cookie, so the connection holds it
+// for exactly as long as it takes to make one call. The returned value goes out of scope
+// when doConnect returns, and nothing that outlives the connect call can reach it.
+func (c *Conn) takeAuthorizer() Authorizer {
+	if a := c.auth.Swap(nil); a != nil {
+		return *a
+	}
+	return nil
 }
 
 // newID returns 16 hex characters from crypto/rand.
@@ -313,17 +343,29 @@ func (c *Conn) Allows(channel string) bool {
 // Send queues one encoded frame for the writer goroutine and reports whether it was
 // accepted. It never blocks, and it never panics on a nil frame or a closed connection.
 //
-// FR-15: false means the outbound queue is full. The caller must not retry and must not
-// wait — it collects the refusing sinks, releases its lock, and hands them to the closer
-// goroutine, which closes them with proto.CloseSlowConsumer. A blocking send here would
-// stall the fan-out goroutine and with it every other subscriber on the channel, which is
-// the failure the whole backpressure design exists to prevent (docs/07-delivery.md §4).
+// FR-15: false means the outbound queue is full, and nothing else. The caller must not
+// retry and must not wait — it collects the refusing sinks, releases its lock, and hands
+// them to the closer goroutine, which closes them with proto.CloseSlowConsumer. A
+// blocking send here would stall the fan-out goroutine and with it every other subscriber
+// on the channel, which is the failure the whole backpressure design exists to prevent
+// (docs/07-delivery.md §4).
+//
+// A closed connection reports true and drops the frame. It is not a slow consumer, it
+// needs no closing, and a fan-out that raced a close must not be sent down an error path
+// it has nothing to do (hub.Sink).
 //
 // f is shared with every other recipient of the same message and must not be modified by
 // anything downstream (docs/09-internals.md §5).
 func (c *Conn) Send(f *proto.Frame) bool {
 	if c.closed.Load() {
-		return false
+		// True, not false. False means one thing to every caller — the outbound queue is
+		// full, close this connection — and a connection that is already closed is not
+		// backpressure. Reporting it as such turns a drain of N connections into N
+		// pointless slow-consumer closes of connections that are already gone, and
+		// hub.Sink says in as many words that a race between fan-out and close must not
+		// be an error path (internal/hub/sink.go, docs/07-delivery.md §4). The frame is
+		// dropped, which is what at-most-once delivery to a closed socket means.
+		return true
 	}
 	return c.offer(f)
 }
@@ -340,19 +382,6 @@ func (c *Conn) offer(f *proto.Frame) bool {
 	default:
 		return false
 	}
-}
-
-// Unsubscribed queues an unsubscribed push, telling the client the gateway dropped a
-// subscription it did not ask to drop (FR-17). It reports whether the push was queued.
-//
-// Dropping a subscription silently leaves the client's registry claiming a channel it
-// will never hear from again, which is indistinguishable from a quiet channel.
-func (c *Conn) Unsubscribed(channel, reason string) bool {
-	c.log.Info("subscription withdrawn", "client", c.id, "channel", channel, "reason", reason)
-	return c.Send(c.encode(&proto.PushFrame{Push: &proto.Push{
-		Channel:      channel,
-		Unsubscribed: &proto.Unsubscribed{Reason: reason},
-	}}))
 }
 
 // Close ends the connection: it queues a disconnect frame carrying code, its reconnect
@@ -421,13 +450,22 @@ func (c *Conn) retryAfter(code proto.CloseCode) time.Duration {
 	}
 	switch code {
 	case proto.CloseDraining, proto.CloseExpired, proto.CloseAuthUnavailable:
-		// The +1 keeps the value positive: a retry_after of 0 is omitted on the wire and
-		// reads to a client as "no guidance", which is the opposite of the instruction.
+		// The window is measured in milliseconds because retry_after is, and it is
+		// floored at one: positive() guarantees a positive *duration*, not a positive
+		// millisecond count, and 999µs.Milliseconds() is 0. Dividing by that panicked on
+		// every close of every connection, so a server.drain_spread under a millisecond
+		// turned the first SIGTERM into a crashed replica. The floor is here rather than
+		// in the validator because the arithmetic must be safe on its own: a value that
+		// reaches this line by another route is still a panic on a connection goroutine.
+		spread := max(c.retrySpread.Milliseconds(), 1)
+		// The +1 keeps the value positive for the same reason the floor exists: a
+		// retry_after of 0 is omitted on the wire and reads to a client as "no guidance",
+		// which is the opposite of the instruction.
 		//
-		// #nosec G115 -- New forces retrySpread positive, so the millisecond count is a
-		// positive int64 and the remainder is strictly below it. Neither conversion can
-		// overflow.
-		slot := int64(fnv1a(c.id) % uint64(c.retrySpread.Milliseconds()))
+		// #nosec G115 -- spread is at least 1 by the line above, so uint64(spread) is a
+		// positive int64 widened, and the remainder is strictly below it and therefore
+		// well inside int64. Neither conversion can overflow.
+		slot := int64(fnv1a(c.id) % uint64(spread))
 		return time.Duration(slot+1) * time.Millisecond
 	case proto.CloseRateLimited:
 		// Fixed by docs/03-client-protocol.md §4.4. Without the delay the anti-abuse

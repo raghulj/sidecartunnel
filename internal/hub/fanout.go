@@ -136,25 +136,54 @@ func (h *Hub) deliver(key string, frame *proto.Frame, exclude string) {
 // fan-out goroutine may never block to schedule work for another goroutine, whatever the
 // queue depth — a bounded queue that fills is a bounded queue that stops all delivery on
 // the replica while every socket stays open and /ready stays 200.
+//
+// closeMu is held across a flag read and one non-blocking send, and never across a close.
+// It is what makes this safe to call concurrently with Close: the spawn registers on
+// h.closers inside the same critical section that would have refused it, so a goroutine
+// can never register on a WaitGroup that Close has already begun waiting on — which is
+// "sync: WaitGroup misuse: Add called concurrently with Wait", a panic that kills the
+// process. Once Close has stopped waiting the close is performed here, on the caller's
+// goroutine, because there is nothing left to hand it to and a dropped close is a
+// connection nobody ends.
+//
+// It must not be called while holding h.mu: closeSlow deregisters
+// (docs/09-internals.md §4.5).
 func (h *Hub) enqueueClose(s Sink) {
+	h.closeMu.Lock()
+	if h.closeDone {
+		h.closeMu.Unlock()
+		h.closeSlow(s)
+		return
+	}
 	select {
 	case h.closeq <- s:
+		h.closeMu.Unlock()
+		return
 	default:
-		h.wg.Add(1)
-		go func() {
-			defer h.wg.Done()
-			h.closeSlow(s)
-		}()
 	}
+	h.closers.Add(1)
+	h.closeMu.Unlock()
+
+	go func() {
+		defer h.closers.Done()
+		h.closeSlow(s)
+	}()
 }
 
 // closeLoop is the dedicated closer goroutine. Closing lives here and nowhere near the
 // fan-out path (docs/09-internals.md §4.3).
+//
+// What is still queued when the context ends is not this goroutine's to finish — a
+// connection whose close is waiting behind a parked one would hold up the shutdown — so
+// Close performs the remainder itself once nothing can be added.
 func (h *Hub) closeLoop() {
 	defer h.wg.Done()
 	for {
 		select {
 		case <-h.ctx.Done():
+			if h.seams.closerExiting != nil {
+				h.seams.closerExiting()
+			}
 			return
 		case s := <-h.closeq:
 			h.closeSlow(s)

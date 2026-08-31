@@ -46,8 +46,15 @@ type Clock interface {
 	// Now returns the current instant.
 	Now() time.Time
 
-	// After returns a channel that receives once, after d.
-	After(d time.Duration) <-chan time.Time
+	// NewTimer returns a channel that receives once after d, and a function that
+	// releases it. The caller always calls the release function, on every path.
+	//
+	// It is NewTimer rather than After because After's timer cannot be stopped: the
+	// runtime holds it until it fires, however long ago the select that was waiting on it
+	// returned. One of these is armed per connection waiting in the connect queue, for
+	// app.connect_timeout, during precisely the reconnect storm the queue exists to
+	// survive (docs/13-review-findings.md C2).
+	NewTimer(d time.Duration) (<-chan time.Time, func())
 }
 
 // realClock is the production Clock: the wall clock and real timers.
@@ -56,8 +63,11 @@ type realClock struct{}
 // Now returns time.Now.
 func (realClock) Now() time.Time { return time.Now() }
 
-// After returns time.After(d).
-func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+// NewTimer returns a real timer and its Stop.
+func (realClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
+}
 
 // Options are the dependencies of a Client. Everything but App has a working default, and
 // every default is stated on the field.
@@ -201,8 +211,23 @@ type Stats struct {
 // sessions and broke every application that rotates its session on login or on every
 // request. Grants expire by re-handshake instead.
 type Client struct {
-	appName        string
-	url            string
+	appName string
+	url     string
+
+	// logURL is url with any userinfo replaced, and it is the only form that may appear
+	// in an error string or a log line.
+	//
+	// app.connect_url: "https://gw:hunter2@webapp.internal/_st/connect" is an ordinary
+	// shape for an internal endpoint, and every transient failure here formats the
+	// configured URL into an error that reaches c.log.Warn. When the application
+	// restarts, that is one logged password per reconnecting connection. The trap is
+	// that net/http redacts userinfo from its own *url.Error, so a hand-rolled wrapper
+	// that does not produces a leak that looks like Go's output and is not (NFR-7).
+	//
+	// config.Validate refuses userinfo in app.connect_url outright; this is the second
+	// half, because a Client is constructible without going through it.
+	logURL string
+
 	secret         []byte
 	connectTimeout time.Duration
 	webhookTimeout time.Duration
@@ -272,6 +297,24 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("app.webhook_retries is %d, want at least 0", app.WebhookRetries)
 	}
 
+	if app.MaxExpiry <= 0 {
+		// clampExpiry compares against the maximum before it clamps up to the minimum, so
+		// an unset maximum returns 0 for every answer the application gives. The caller
+		// reads 0 as "no expiry", never arms the timer, and FR-22 is off for the life of
+		// the process — silently, with every connection reporting expires_in 0 to a
+		// client that has no reason to question it.
+		return nil, fmt.Errorf("app.max_expiry is %s, want a positive duration: "+
+			"an unset maximum clamps every connection's expires_in to zero and the expiry "+
+			"timer is never armed (FR-22)", app.MaxExpiry.Duration())
+	}
+	if app.MaxExpiry < app.MinExpiry {
+		// Inverted, the two clamps put every answer outside its own window: clampExpiry
+		// returns MaxExpiry for a large expires_in and MinExpiry for a small one, so no
+		// input produces a value inside [min, max] because there is no such interval.
+		return nil, fmt.Errorf("app.max_expiry is %s, which is below app.min_expiry %s",
+			app.MaxExpiry.Duration(), app.MinExpiry.Duration())
+	}
+
 	trusted := make([]netip.Prefix, 0, len(opts.TrustedProxies))
 	for i, cidr := range opts.TrustedProxies {
 		p, err := netip.ParsePrefix(cidr)
@@ -284,6 +327,7 @@ func New(opts Options) (*Client, error) {
 	c := &Client{
 		appName:        app.Name,
 		url:            app.ConnectURL,
+		logURL:         config.RedactedURL(app.ConnectURL),
 		secret:         []byte(app.WebhookSecrets[0]),
 		connectTimeout: app.ConnectTimeout.Duration(),
 		webhookTimeout: app.WebhookTimeout.Duration(),
@@ -420,12 +464,22 @@ func (c *Client) acquire(ctx context.Context) (Result, bool) {
 	// closing these connections permanently would turn the mechanism that protects the
 	// application against a reconnect storm into a permanent lockout of every user
 	// caught in one (docs/13-review-findings.md C2).
+	//
+	// The timer is stopped on every path. Left running it is one runtime timer per
+	// queued connection, held for the whole budget after the select has already
+	// returned — 4096 of them at the documented defaults, during the storm
+	// (docs/13-review-findings.md C2). The ctx.Done arm enforces the same bound for the
+	// caller that has one (internal/conn derives its context from app.connect_timeout);
+	// the timer is what bounds a caller that does not.
+	expired, stop := c.clock.NewTimer(c.connectTimeout)
+	defer stop()
+
 	select {
 	case c.inflight <- struct{}{}:
 		return nil, true
 	case <-ctx.Done():
 		return Unavailable{Err: fmt.Errorf("waiting for a webhook slot: %w", ctx.Err())}, false
-	case <-c.clock.After(c.connectTimeout):
+	case <-expired:
 		return Unavailable{Err: fmt.Errorf("waited app.connect_timeout=%s for a webhook slot: %w", c.connectTimeout, context.DeadlineExceeded)}, false
 	}
 }
@@ -447,7 +501,7 @@ func (c *Client) attempts(ctx context.Context, req Request, deadline time.Time) 
 		// that no longer exists is load on an application that is usually already
 		// struggling, which is the whole reason the retry exists.
 		if err := ctx.Err(); err != nil {
-			return Unavailable{Err: fmt.Errorf("connect webhook %q: %w", c.url, err)}
+			return Unavailable{Err: fmt.Errorf("connect webhook %q: %w", c.logURL, err)}
 		}
 		remaining := deadline.Sub(c.clock.Now())
 		if remaining <= 0 {
@@ -491,7 +545,7 @@ func (c *Client) attempt(ctx context.Context, req Request, forwarded string, tim
 
 	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
-		return Unavailable{Err: fmt.Errorf("building the connect request for app.connect_url %q: %w", c.url, err)}
+		return Unavailable{Err: fmt.Errorf("building the connect request for app.connect_url %q: %w", c.logURL, err)}
 	}
 
 	timestamp := strconv.FormatInt(c.clock.Now().Unix(), 10)
@@ -510,7 +564,7 @@ func (c *Client) attempt(ctx context.Context, req Request, forwarded string, tim
 	if err != nil {
 		// A timeout, a refused connection, a DNS failure: "I could not tell you right
 		// now", which is transient and retryable (FR-6).
-		return Unavailable{Err: fmt.Errorf("connect webhook %q: %w", c.url, err)}
+		return Unavailable{Err: fmt.Errorf("connect webhook %q: %w", c.logURL, err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -562,7 +616,7 @@ func (c *Client) classify(resp *http.Response) Result {
 		c.drain(resp)
 		return Unavailable{
 			Status: resp.StatusCode,
-			Err:    fmt.Errorf("connect webhook %q answered %d", c.url, resp.StatusCode),
+			Err:    fmt.Errorf("connect webhook %q answered %d", c.logURL, resp.StatusCode),
 		}
 	}
 }

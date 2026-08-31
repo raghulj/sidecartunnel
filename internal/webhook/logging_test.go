@@ -2,8 +2,10 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -111,5 +113,61 @@ func TestCall_LogsNoSignature_NFR7(t *testing.T) {
 	}
 	if strings.Contains(out.String(), app.request(0).header.Get("X-St-Nonce")) {
 		t.Logf("the nonce is logged; harmless, but noted")
+	}
+}
+
+// TestCall_LogsNoConnectURLCredentials_NFR7: `app.connect_url:
+// "https://gw:hunter2@webapp.internal/_st/connect"` is an ordinary shape for an internal
+// endpoint, and this package formats the configured URL into four of its own error
+// strings. Those errors reach c.log.Warn("connect webhook unavailable", …, "err", err),
+// so when the application restarts, every timed-out connect logs the password.
+//
+// The trap is that net/http strips userinfo from its own *url.Error — so the leak looks
+// exactly like Go's output and is not. config.Validate now refuses userinfo outright;
+// this asserts the second half, because a Client is constructible without it.
+func TestCall_LogsNoConnectURLCredentials_NFR7(t *testing.T) {
+	const password = "hunter2"
+
+	withCredentials := func(raw string) string {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parsing the stub app's URL: %v", err)
+		}
+		parsed.User = url.UserPassword("gw", password)
+		return parsed.String()
+	}
+
+	var out syncBuffer
+	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// classify's default arm: an unlisted status formats the URL into the error.
+	app := newStubApp(t, func(w http.ResponseWriter, _ int) { writeJSON(w, 500, `{}`) })
+	cfg := testApp(withCredentials(app.server.URL))
+	cfg.WebhookRetries = 0
+	newTestClient(t, Options{App: cfg, Logger: logger}).Call(t.Context(), testRequest())
+
+	// attempt's transport arm: the application is down, which is the case that produces
+	// one of these lines per reconnecting connection.
+	down := testApp(withCredentials("http://127.0.0.1:1/_st/connect"))
+	down.WebhookRetries = 0
+	newTestClient(t, Options{App: down, Logger: logger}).Call(t.Context(), testRequest())
+
+	// attempts' cancelled-context arm: the browser went away mid-authorization.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	newTestClient(t, Options{App: cfg, Logger: logger}).Call(ctx, testRequest())
+
+	logged := out.String()
+	if !strings.Contains(logged, "redacted@") {
+		t.Fatalf("no redacted URL was logged, so the assertion below is vacuous:\n%s", logged)
+	}
+	if strings.Contains(logged, password) {
+		t.Errorf("the log contains the app.connect_url password (NFR-7):\n%s", logged)
+	}
+	// The inner *url.Error from net/http still reads `Post "http://gw:***@…"`. That is
+	// Go's own redaction and it is the shape this leak was hiding behind: the username
+	// survives, the password does not. What must never appear is the pair.
+	if strings.Contains(logged, "gw:"+password) {
+		t.Errorf("the log contains the app.connect_url userinfo verbatim (NFR-7):\n%s", logged)
 	}
 }

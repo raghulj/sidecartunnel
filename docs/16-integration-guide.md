@@ -615,7 +615,7 @@ both signed and published.
 | Action | Effect |
 |---|---|
 | `disconnect` | Close matching connections with 3501, `reconnect: false`. |
-| `refresh` | Close with 3503, `reconnect: true`, spread over `control.refresh_spread`. Clients reconnect and re-authorize with a current cookie. |
+| `refresh` | Close with 3503, `reconnect: true`, with a `retry_after` spread over `server.drain_spread`. Clients reconnect and re-authorize with a current cookie. |
 | `unsubscribe` | Drop matching subscriptions and send each client an `unsubscribed` push. `channel` may be a glob. |
 
 `user` and `client` are matched **exactly, never as globs**, and every action must name
@@ -636,9 +636,10 @@ authentic message outside the ±300s window — usually this replica's clock.
 | Role or membership changed, user still valid | `refresh` by `user` — grants are recomputed on reconnect |
 | One channel's access removed | `unsubscribe` by `user` with the channel |
 
-`refresh` on a large population is a stampede. It is spread over
-`control.refresh_spread`, and it should still be issued per user rather than in a loop over
-every user of a tenant.
+`refresh` on a large population is a stampede. Each closed connection carries a
+`retry_after` spread over `server.drain_spread`, and it should still be issued per user
+rather than in a loop over every user of a tenant: the spread bounds how fast they come
+back, not how many.
 
 ### 8.3 There Is No Second Door
 

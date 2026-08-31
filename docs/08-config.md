@@ -68,7 +68,7 @@ FATAL config: server.allowed_origins is empty — refusing to start.
 | `ping_interval` | duration | `25s` | 5s–300s. Must be below any proxy idle timeout. |
 | `pong_timeout` | duration | `10s` | 1s–60s, and less than `ping_interval` |
 | `drain_timeout` | duration | `20s` | 1s–300s |
-| `drain_spread` | duration | `60s` | Window across which drain `retry_after` is spread. At 10,000 connections per replica and 40 ms auth latency, 60s yields ~7 concurrent requests at the application; 30s yields ~13, which is tight against a 16-worker pool. |
+| `drain_spread` | duration | `60s` | 1s–300s. Window across which a retryable `disconnect`'s `retry_after` is spread — drain (3000), grant expiry and control `refresh` (3503), and an unavailable webhook (3008). At 10,000 connections per replica and 40 ms auth latency, 60s yields ~7 concurrent requests at the application; 30s yields ~13, which is tight against a 16-worker pool. The 1s floor is not cosmetic: `retry_after` is milliseconds on the wire, so a sub-millisecond window is arithmetically no window at all, and it validated cleanly before the range existed. |
 | `read_header_timeout` | duration | `5s` | Guards against slowloris on the upgrade |
 | `trusted_proxies` | []string | `[]` | CIDRs whose `X-Forwarded-For` is believed. Default trusts nothing, so `X-St-Forwarded-For` is the socket peer — see FR-24. |
 
@@ -93,7 +93,7 @@ rule, per-app namespaces, per-app limits, and a per-app cache key.
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `name` | string | `app` | Used in logs. |
-| `connect_url` | string | — | **Required.** Absolute http/https URL. |
+| `connect_url` | string | — | **Required.** Absolute http/https URL, **with no credentials in it.** |
 | `webhook_secrets` | []string | — | **Required**, min 32 bytes each. Signs with the first; a list exists so a secret can be rotated without simultaneous restarts. |
 | `connect_timeout` | duration | `10s` | Whole authorization budget: queue wait plus the call. Exceeding it closes 3008, retryable. |
 | `connect_queue` | int | `4096` | Max connections awaiting authorization. Overflow closes 3008. |
@@ -104,6 +104,17 @@ rule, per-app namespaces, per-app limits, and a per-app cache key.
 | `cache_ttl` | duration | `0` | **Off by default.** Keyed on a hash of `cookie_names`. Flushed entirely by any control `disconnect`, because a cached entry otherwise survives a revocation. |
 | `min_expiry` | duration | `60s` | Clamps a webhook's `expires_in` from below |
 | `max_expiry` | duration | `6h` | Clamps from above. The clamped value is what the client is told. |
+
+`connect_url` refuses userinfo — `https://gw:hunter2@webapp.internal/_st/connect` fails
+at startup, naming the key and quoting nothing. That shape is ordinary for an internal
+endpoint, and the gateway formats the configured URL into its own error strings, which
+reach a `warn` line on every timed-out connect: one logged password per reconnecting
+connection, every time the application restarts. It buys nothing either, because the
+webhook is already authenticated to the application by the HMAC over `webhook_secrets`. Put
+credentials in a header the application checks, or in the secret. Any URL the gateway does
+name in an error or a log line has its userinfo replaced first, `bus.url` included —
+`redis://:password@host` is the documented way to give the bus a password, so there the
+userinfo is accepted and only the echo is refused (NFR-7).
 
 `refresh_at`, `refresh_retries` and `bus_prefix` are gone. Grants now expire by
 re-handshake rather than revalidation (`13-review-findings.md` S3), so there is no refresh
@@ -180,7 +191,17 @@ claims presence is on, while presence does nothing, is a lie an operator will ac
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `secret` | string | — | **Required.** Min 32 bytes. Signs control messages (FR-23). |
-| `refresh_spread` | duration | `60s` | Window over which a mass `refresh` is spread |
+
+There was a `refresh_spread` here. It is gone: a control `refresh` closes with 3503, and
+every retryable close takes its `retry_after` from `server.drain_spread` — there is one
+spread window in the connection layer and there was only ever one. The key was defaulted,
+validated and documented, and read by no code at all, so an operator who widened it got
+`drain_spread` anyway and five times the concurrent authorization load they had asked to
+avoid. A second window would also have had nothing to say that the first does not: a
+`refresh` must name exactly one `user` or one `client` (§8.1 of `04-integration.md`), so
+one message reaches at most `limits.max_connections_per_user` connections, and a loop over
+users is paced by the loop. This is the third key in this repository to be specified and
+wired to nothing; see `13-review-findings.md`.
 
 ### `log`
 

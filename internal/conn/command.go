@@ -95,9 +95,6 @@ func (c *Conn) handle(ctx context.Context, data []byte) bool {
 	}
 
 	if cmd.Connect != nil {
-		if c.connectSeen.Load() {
-			return c.fail(cmd.ID, proto.ErrBadRequest, "already connected")
-		}
 		return c.doConnect(ctx, cmd)
 	}
 	if !c.connectSeen.Load() {
@@ -128,12 +125,24 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 	// a non-retryable 3001 the moment the application slows down.
 	c.connectSeen.Store(true)
 
+	// Taking the Authorizer both drops the connection's reference to the cookie it closes
+	// over (FR-22) and is the once-guard: docs/03-client-protocol.md §4.1 says connect
+	// may be sent once, and a second one finds nothing left to authorize with. The two
+	// are deliberately the same act, so that dropping the reference cannot be removed
+	// without breaking a rule that has its own test.
+	authorizer := c.takeAuthorizer()
+	if authorizer == nil {
+		// Left open, like every other 101: a client that sends a second connect has a
+		// bug, and disconnecting it turns a recoverable bug into a reconnect loop.
+		return c.fail(cmd.ID, proto.ErrBadRequest, "already connected")
+	}
+
 	// The requested channels are bounded here, before they leave the connection for an
 	// outbound request the application must parse (docs/04-integration.md §1.1). They are
 	// a hint: the Authorizer answers with the grants, and every check below matches
 	// against those and never against this list.
 	authCtx, cancel := context.WithTimeout(ctx, c.connectTimeout)
-	auth, err := c.auth.Authorize(authCtx, c.requested(cmd.Connect.Subs))
+	auth, err := authorizer.Authorize(authCtx, c.requested(cmd.Connect.Subs))
 	cancel()
 	if err != nil {
 		// FR-6: a refusal and a failure must not share a code. 3003 is a decision and
@@ -348,10 +357,29 @@ func (c *Conn) doPing(cmd proto.Command) bool {
 	return c.send(&proto.Reply{ID: cmd.ID, Pong: &proto.Pong{}})
 }
 
-// wellFormed reports whether a channel name is within limits.max_channel_length and not
-// empty. A longer name is proto.ErrBadRequest (docs/07-delivery.md §7).
+// wellFormed reports whether a channel name is one docs/06-channels.md §1 permits: 1 to
+// limits.max_channel_length bytes of printable ASCII, with no whitespace and no control
+// characters. Anything else is proto.ErrBadRequest (docs/07-delivery.md §7).
+//
+// The character rule is enforced here rather than trusted to the grant, because a grant
+// is a prefix: "room-*" matches "room- \n admin", and that name would otherwise enter the
+// hub map, the desired set, a Redis SUBSCRIBE, the subscribe line the runbook greps and
+// every sync reply. §2 requires channel names be human-readable **because** they appear
+// in logs, and one carrying a newline forges log lines.
+//
+// The test is on bytes rather than runes on purpose: it accepts exactly 0x21–0x7E, which
+// excludes the space, DEL, every C0 control character, and every byte of every multi-byte
+// sequence — so invalid UTF-8 is refused by the same comparison, with no decode.
 func (c *Conn) wellFormed(channel string) bool {
-	return channel != "" && len(channel) <= c.maxChannelLength
+	if channel == "" || len(channel) > c.maxChannelLength {
+		return false
+	}
+	for i := range len(channel) {
+		if channel[i] <= 0x20 || channel[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // checkChannel applies every rule this package can answer from its own state: shape,

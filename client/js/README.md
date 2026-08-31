@@ -89,6 +89,8 @@ await st.subscribe('room-4410', (pub) => {
 |---|---|
 | `connect(options)` | Opens a client. |
 | `backoffDelay(attempt, opts)` | The full-jitter formula, exported so it can be asserted directly. |
+| `clampRetryAfter(value)` | The `retry_after` bounds, exported for the same reason. Returns the milliseconds to wait, or `null` when the value is not guidance. |
+| `MAX_RETRY_AFTER_MS` | `300000`. The ceiling `clampRetryAfter` applies. |
 | `resolveUrl(url)` | Relative endpoint to absolute websocket URL. |
 | `StError` | `Error` subclass with a `code` field. |
 
@@ -98,7 +100,9 @@ The gateway sends a `disconnect` frame immediately before the close frame. That 
 
 | Signal | Client behaviour |
 |---|---|
-| `retry_after` present | That value, in milliseconds, is used **in place of** local backoff for the attempt. The gateway knows how many connections it is dropping and the client does not. |
+| `retry_after` present | That value, in milliseconds, is used **in place of** local backoff for the attempt, clamped to `[0, 300000]`. The gateway knows how many connections it is dropping and the client does not. |
+| `retry_after` above `300000` | Clamped to `300000`. That is the top of `server.drain_spread`'s documented range ([`08-config.md`](../../docs/08-config.md) §3), so no legitimate value exceeds it — and a gateway asking for a long wait is likelier to be spreading a real storm than to be broken, so it is clamped rather than discarded. |
+| `retry_after` negative, `NaN` or `Infinity` | Not guidance. Treated as absent, so local backoff applies. |
 | `retry_after` absent | Full jitter: `random(0, min(30000, 1000 × 2^n))`. |
 | `reconnect: false` | Stop permanently. No timer is scheduled, no further socket is opened, and every later command rejects with code `'closed'`. |
 | No `disconnect` frame | Close codes 3001, 3003, 3006 and 3501 are treated as permanent per the §7 table. Everything else, including 1006, is retried. |
@@ -108,7 +112,11 @@ The jitter is **full jitter**, not the multiplicative `x × random(0.5, 1.5)` fo
 
 `2^n` is expressed in seconds by §8.2 (`min(30s, 2^n)`), so the implementation uses `min(30000, 1000 × 2^n)` milliseconds. `backoffBase` overrides the base unit for anyone who reads it otherwise.
 
+Honouring `retry_after` is a MUST (§7.1), but a client with no floor and no ceiling cannot survive a gateway that gets it wrong: a negative value defeats the spread the field exists to create, and an absurd one parks the page for its lifetime. The bounds above are what "honour it" means here.
+
 Every in-flight command rejects with `StError` code `'disconnected'` when the connection dies. A `subscribe` that was still awaiting its reply is the exception: it stays in the registry, is replayed in the next `connect` frame, and settles on that reply instead.
+
+`close()` settles everything itself. It is the one path with no close event to ride: called during backoff there is no socket at all, so anything queued behind the connect reply and every registry entry waiting for it are rejected with code `'closed'` there and then. Nothing an application awaits is left unsettled by a `close()`.
 
 ## The Subscription Registry
 
@@ -119,6 +127,7 @@ The gateway remembers nothing across connections (§8.3). The client keeps its o
 | `subscribe` accepted | Added. |
 | `subscribe` refused (103, 104, 108) | Not added. |
 | `unsubscribe` accepted | Removed. |
+| `unsubscribe` before the connect reply | Removed locally, so it never rides the next `connect` frame. The waiting `subscribe` promise **resolves**: the caller cancelled it, which is ordinary control flow and not a failure to be caught. |
 | `unsubscribed` push | Removed, and never resubscribed. A client that replays a revoked channel gets 103 on every reconnect forever (§8.5). |
 | Channel omitted from a replayed connect reply | Removed, and reported in `onReconnect().denied`. The grant behind it is gone, so replaying it has the same failure mode as the previous row. Re-subscribe explicitly if the denial is expected to be transient. |
 

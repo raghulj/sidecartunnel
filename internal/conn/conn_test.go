@@ -308,9 +308,15 @@ func TestClose_IsIdempotentUnderRace(t *testing.T) {
 	}
 }
 
-// TestSend_AfterCloseReturnsFalse — Sink: a race between fan-out and close is normal
+// TestSend_AfterCloseIsNotBackpressure — Sink: a race between fan-out and close is normal
 // and must not be an error path.
-func TestSend_AfterCloseReturnsFalse(t *testing.T) {
+//
+// false has exactly one meaning to a caller — the outbound queue is full, hand this sink
+// to the closer goroutine — so a closed connection reporting false is a drain of N
+// connections turning into N slow-consumer closes of connections that have already gone
+// (internal/hub/fanout.go's deliver, docs/07-delivery.md §4). The frame is still dropped;
+// only the answer changes.
+func TestSend_AfterCloseIsNotBackpressure(t *testing.T) {
 	r := newRig(t)
 	r.connect()
 	r.conn.Close(proto.CloseRevoked, "revoked")
@@ -319,8 +325,11 @@ func TestSend_AfterCloseReturnsFalse(t *testing.T) {
 	case <-time.After(failAfter):
 		t.Fatal("Run did not return")
 	}
-	if r.conn.Send(&proto.Frame{Data: []byte(`{"push":{}}`)}) {
-		t.Fatal("Send on a closed connection returned true")
+	if !r.conn.Send(&proto.Frame{Data: []byte(`{"push":{}}`)}) {
+		t.Fatal("Send on a closed connection reported backpressure; there is no queue to be full of")
+	}
+	if queued := len(r.conn.out); queued != 0 {
+		t.Fatalf("outbound queue holds %d frames, want 0: a closed connection queues nothing", queued)
 	}
 }
 
@@ -668,24 +677,6 @@ func TestConnect_NoExpiryArmsNoTimer(t *testing.T) {
 	}
 }
 
-// TestUnsubscribed_Push_FR17 — a withdrawn subscription is announced, never dropped
-// silently: silence is indistinguishable from a quiet channel.
-func TestUnsubscribed_Push_FR17(t *testing.T) {
-	r := newRig(t)
-	r.connect()
-	if !r.conn.Unsubscribed("room-1", "grant revoked") {
-		t.Fatal("Unsubscribed returned false on an idle queue")
-	}
-	frame := r.sock.nextWrite(t)
-	var push proto.Push
-	if err := json.Unmarshal(frame["push"], &push); err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	if push.Channel != "room-1" || push.Unsubscribed == nil || push.Unsubscribed.Reason != "grant revoked" {
-		t.Fatalf("push = %+v, want an unsubscribed push for room-1", push)
-	}
-}
-
 // TestRetryAfter_PerCloseCode covers docs/03-client-protocol.md §7 and §7.1.
 func TestRetryAfter_PerCloseCode(t *testing.T) {
 	c, err := New(Options{
@@ -790,5 +781,73 @@ func TestNFR7_LogsCarryNoSecrets(t *testing.T) {
 		if strings.Contains(logs, secret) {
 			t.Fatalf("NFR-7: log output contains %q:\n%s", secret, logs)
 		}
+	}
+}
+
+// TestRetryAfter_SpreadUnderOneMillisecond — server.drain_spread is a duration, and
+// retry_after is milliseconds. positive() guarantees a positive *duration*, not a
+// positive *millisecond count*: 999µs.Milliseconds() is 0, so the remainder that spreads
+// the connection divided by zero and every close on that connection panicked. A panic on
+// a connection goroutine takes the process with it, so the first SIGTERM crashed the
+// replica (docs/03-client-protocol.md §7.1, docs/14-coding-standards.md §6).
+func TestRetryAfter_SpreadUnderOneMillisecond(t *testing.T) {
+	tests := []struct {
+		name   string
+		spread time.Duration
+		want   time.Duration
+	}{
+		{"one nanosecond", time.Nanosecond, time.Millisecond},
+		{"just under a millisecond", 999 * time.Microsecond, time.Millisecond},
+		{"exactly one millisecond", time.Millisecond, time.Millisecond},
+		{"one and a half milliseconds", 1500 * time.Microsecond, time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := New(Options{
+				ID: "0123456789abcdef", Socket: newFakeSocket(), Registry: newFakeRegistry(),
+				Authorizer: okAuth(t, "u"), RetrySpread: tt.spread,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			for _, code := range []proto.CloseCode{proto.CloseDraining, proto.CloseExpired, proto.CloseAuthUnavailable} {
+				if got := c.retryAfter(code); got != tt.want {
+					t.Fatalf("retryAfter(%d) with spread %s = %v, want %v", code, tt.spread, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestClose_SubMillisecondSpreadStillSendsADisconnect drives the same arithmetic through
+// a live connection, because the panic was not in an arithmetic helper — it was on the
+// path every drain takes.
+func TestClose_SubMillisecondSpreadStillSendsADisconnect(t *testing.T) {
+	r := newRig(t, func(o *Options) { o.RetrySpread = 999 * time.Microsecond })
+	r.connect()
+	r.conn.Close(proto.CloseDraining, "draining")
+	got := r.wantDisconnect(proto.CloseDraining)
+	if got.RetryAfter != 1 {
+		t.Fatalf("retry_after = %dms, want 1: a retry_after of 0 is omitted on the wire and reads as no guidance", got.RetryAfter)
+	}
+}
+
+// TestConnect_DropsTheAuthorizer_FR22 — the Authorizer is the one object on a connection
+// that closes over the client's Cookie header, and a Conn outlives the connect call by
+// app.expires_in (6h by default). FR-22: the gateway MUST NOT retain the cookie beyond
+// the connect call, so the reference is taken exactly once and dropped there. Anything
+// still reachable from a live Conn is in a core dump of the process.
+//
+// The drop is load-bearing rather than hygienic: taking the Authorizer is what makes a
+// second connect frame "already connected" (docs/03-client-protocol.md §4.1), so a
+// future change that stops dropping it fails TestDuplicateConnect_101 as well as this.
+func TestConnect_DropsTheAuthorizer_FR22(t *testing.T) {
+	r := newRig(t)
+	if r.conn.auth.Load() == nil {
+		t.Fatal("the connection holds no Authorizer before the connect frame")
+	}
+	r.connect()
+	if r.conn.auth.Load() != nil {
+		t.Fatal("the connection still holds the Authorizer after connect: it closes over the cookie (FR-22)")
 	}
 }

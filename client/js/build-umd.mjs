@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, 'sidecartunnel.js');
 const OUT = join(HERE, 'sidecartunnel.umd.js');
-const EXPORTS = ['connect', 'backoffDelay', 'resolveUrl', 'StError'];
+const EXPORTS = ['connect', 'backoffDelay', 'clampRetryAfter', 'MAX_RETRY_AFTER_MS', 'resolveUrl', 'StError'];
 
 /**
  * Build the UMD source text from the ES module source text.

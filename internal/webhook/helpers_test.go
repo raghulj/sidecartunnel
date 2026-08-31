@@ -31,12 +31,13 @@ const testCookie = "sessionid=s3cr3t-session-value; _ga=GA1.1.111"
 type fakeClock struct {
 	mu         sync.Mutex
 	now        time.Time
-	pending    []chan time.Time
+	seq        int
+	pending    map[int]chan time.Time
 	registered chan struct{}
 }
 
 func newFakeClock(at time.Time) *fakeClock {
-	return &fakeClock{now: at, registered: make(chan struct{}, 256)}
+	return &fakeClock{now: at, pending: map[int]chan time.Time{}, registered: make(chan struct{}, 256)}
 }
 
 // Now returns the current fake instant.
@@ -46,19 +47,38 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
-// After hands back a channel the test fires explicitly with fireTimers. It also signals
-// registration, so a test can wait for the code under test to start waiting instead of
-// guessing that it has.
-func (c *fakeClock) After(time.Duration) <-chan time.Time {
+// NewTimer hands back a channel the test fires explicitly with fireTimers, and a stop
+// function that forgets it. It also signals registration, so a test can wait for the code
+// under test to start waiting instead of guessing that it has.
+//
+// A stopped timer leaves nothing behind, which is what outstanding counts: a production
+// timer that is never stopped is one the runtime holds to its deadline.
+func (c *fakeClock) NewTimer(time.Duration) (<-chan time.Time, func()) {
 	ch := make(chan time.Time, 1)
 	c.mu.Lock()
-	c.pending = append(c.pending, ch)
+	c.seq++
+	id := c.seq
+	c.pending[id] = ch
 	c.mu.Unlock()
 	select {
 	case c.registered <- struct{}{}:
 	default:
 	}
-	return ch
+	return ch, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.pending, id)
+	}
+}
+
+// outstanding reports how many timers the code under test is still holding. A timer that
+// is never released is a timer the runtime keeps until it fires, which at
+// connect_queue: 4096 and connect_timeout: 10s is 4096 of them held through exactly the
+// reconnect storm the queue exists to survive.
+func (c *fakeClock) outstanding() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending)
 }
 
 // advance moves the clock without firing anything.
@@ -68,11 +88,11 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// fireTimers fires every timer handed out so far.
+// fireTimers fires every timer still armed.
 func (c *fakeClock) fireTimers() {
 	c.mu.Lock()
 	pending := c.pending
-	c.pending = nil
+	c.pending = map[int]chan time.Time{}
 	now := c.now
 	c.mu.Unlock()
 	for _, ch := range pending {

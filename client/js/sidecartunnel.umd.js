@@ -28,6 +28,42 @@ const MAX_BACKOFF_MS = 30000;
 const BACKOFF_BASE_MS = 1000;
 
 /**
+ * Ceiling for a server-directed `retry_after`, in milliseconds.
+ *
+ * 300000 is the top of `server.drain_spread`'s documented range (`docs/08-config.md` §3),
+ * and every `retry_after` the gateway sends is either drawn from that window or is the
+ * fixed 60s of a 3007 (§4.4). So no legitimate value can exceed it, and a larger one is a
+ * bug at the other end — which §7.1's MUST would otherwise turn into a tab that reconnects
+ * some time next month.
+ */
+const MAX_RETRY_AFTER_MS = 300000;
+
+/**
+ * Bound a `retry_after` from a `disconnect` frame. §7.1 says a client MUST honour it, and
+ * a client with no floor and no ceiling cannot survive a gateway that gets it wrong:
+ * a negative value defeats the spread the field exists to create, and an absurd one parks
+ * the page for its lifetime.
+ *
+ * A value that is not a finite, non-negative number is not guidance, so it is treated as
+ * absent and the client falls back to its own full jitter (§8.2) — which is what §8.2
+ * already prescribes for a `disconnect` that carries no `retry_after` at all. `NaN` is
+ * caught here rather than by the caller's `typeof` check, because `typeof NaN` is
+ * `'number'` and `setTimeout(fn, NaN)` fires immediately: a whole fleet returning at once,
+ * which is the exact outcome §7.1 exists to prevent.
+ *
+ * A value above the ceiling is clamped rather than discarded: a gateway asking for a long
+ * wait is far more likely to be spreading a real storm than to be broken, so the safe
+ * reading is "as long as we can justify", not "ignore it".
+ *
+ * @param {unknown} value The frame's `retry_after`, in milliseconds.
+ * @returns {number|null} Milliseconds to wait, or `null` to use local backoff.
+ */
+function clampRetryAfter(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return Math.min(value, MAX_RETRY_AFTER_MS);
+}
+
+/**
  * Close codes whose row in docs/03-client-protocol.md §7 says `reconnect: false`.
  * Used only when the socket closes without a preceding `disconnect` frame; a
  * frame that is present always wins.
@@ -246,8 +282,9 @@ class SidecarTunnel {
       return;
     }
     // §7.1 / §8.2 — `retry_after` (ms) replaces our own backoff for this attempt.
-    // The gateway knows how many connections it is dropping and we do not.
-    const retryAfter = d && typeof d.retry_after === 'number' ? d.retry_after : null;
+    // The gateway knows how many connections it is dropping and we do not. Clamped:
+    // honouring it is a MUST, honouring it unconditionally is a way to lose the tab.
+    const retryAfter = d ? clampRetryAfter(d.retry_after) : null;
     this._scheduleReconnect(retryAfter, { code, reason });
   }
 
@@ -405,8 +442,15 @@ class SidecarTunnel {
     if (!this._ready) {
       // Nothing was sent on this connection; dropping it locally is enough to
       // keep it out of the next connect frame's `subs` (§8.3).
+      //
+      // The waiting subscribe is RESOLVED, not rejected. The caller cancelled it, which
+      // is ordinary control flow and not a failure, and `subscribe(); unsubscribe();`
+      // before the connect reply is a shape an application arrives at by rendering and
+      // then unmounting. Rejecting it produced an unhandled rejection whenever the caller
+      // had not attached a `.catch` it had no reason to attach. `_onClose` resolves an
+      // entry in 'unsubscribing' state for the same reason.
       this._registry.delete(channel);
-      this._settle(entry, false, new StError('unsubscribed', 'unsubscribed before connect'));
+      this._settle(entry, true);
       return Promise.resolve();
     }
     entry.state = 'unsubscribing';
@@ -444,7 +488,34 @@ class SidecarTunnel {
     this._open = false;
     this._ready = false;
     if (sock) { try { sock.close(1000, 'client closed'); } catch { /* already gone */ } }
+    // Unconditionally, and after the socket close rather than instead of it.
+    //
+    // During backoff there is no socket at all, so no `close` event is coming and
+    // `_onClose` never runs: anything queued behind the connect reply, and any registry
+    // entry waiting to ride the next connect frame, would never settle — an application
+    // awaiting subscribe() hangs for the lifetime of the page. `_onClose` does not cover
+    // it either, because its `_closed` branch leaves registry entries in 'pending'.
+    // Every settle below is idempotent, so the ordinary path where `_onClose` has already
+    // run finds nothing left to do.
+    this._abandon();
     if (this.state !== 'closed') this._setState('closed', { reason: 'client closed' });
+  }
+
+  /**
+   * Settle everything the application is awaiting, because after `close()` nothing else
+   * will. Registry entries are dropped as well as settled: the client is finished, and a
+   * channel list that outlives it is a lie the next reader has to work out.
+   */
+  _abandon() {
+    const err = () => new StError('closed', 'client is closed');
+    for (const p of this._pending.values()) p.reject(err());
+    this._pending.clear();
+    for (const thunk of this._queue) thunk.reject(err());
+    this._queue = [];
+    for (const [channel, e] of Array.from(this._registry)) {
+      this._registry.delete(channel);
+      this._settle(e, false, err());
+    }
   }
 }
 
@@ -478,5 +549,5 @@ function connect(options = {}) {
   return new SidecarTunnel(options);
 }
 
-return { connect, backoffDelay, resolveUrl, StError };
+return { connect, backoffDelay, clampRetryAfter, MAX_RETRY_AFTER_MS, resolveUrl, StError };
 });

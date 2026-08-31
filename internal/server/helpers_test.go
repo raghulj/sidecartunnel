@@ -229,6 +229,11 @@ func testConfig() *config.Config {
 		App: config.App{
 			Name:           "app",
 			ConnectTimeout: config.Duration(10 * time.Second),
+			// The expiry clamps, because webhook.New refuses an unset app.max_expiry:
+			// clampExpiry compares against the maximum first, so zero would give every
+			// connection expires_in 0 and never arm the timer (FR-22).
+			MinExpiry: config.Duration(60 * time.Second),
+			MaxExpiry: config.Duration(6 * time.Hour),
 		},
 		Namespaces: []config.Namespace{{Name: "room", RateLimit: "10/s"}, {Name: "desk", ClientEvents: true, RateLimit: "10/s"}},
 		Limits: config.Limits{

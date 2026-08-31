@@ -91,6 +91,12 @@ func TestAttach_TakesTheGrantedChannelsAndReports(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, h, s)
 			}
+			// Registered first, as internal/server does at the upgrade: Attach registers
+			// nothing, because a hub that registered there could not tell a connection
+			// that was never added from one close has just deregistered (M4). The
+			// duplicate-id row is the one where this refuses, which is the case it is
+			// testing.
+			_ = h.Add(s)
 
 			var granted []string
 			called := 0
@@ -120,6 +126,7 @@ func TestAttach_SubscribesUpstreamOnce_FR10(t *testing.T) {
 	b := newBus()
 	h := newTestHub(t, b)
 	s := newSink("c1", "u1")
+	mustAdd(t, h, s)
 
 	h.Attach(s, []string{"room-1", "room-2"}, func([]string) *proto.Frame { return nil })
 
@@ -132,6 +139,7 @@ func TestAttach_ANilAckQueuesNothing(t *testing.T) {
 	t.Parallel()
 	h := newTestHub(t, newBus())
 	s := newSink("c1", "u1")
+	mustAdd(t, h, s)
 
 	h.Attach(s, []string{"room-1"}, func([]string) *proto.Frame { return nil })
 
@@ -157,6 +165,7 @@ func TestAckRefused_ClosesOffTheLock_FR15(t *testing.T) {
 			name: "attach",
 			act: func(t *testing.T, h *Hub, s *fakeSink) {
 				t.Helper()
+				mustAdd(t, h, s)
 				s.full.Store(true)
 				h.Attach(s, []string{"room-1"}, func([]string) *proto.Frame {
 					return mustEncode(t, &proto.Reply{ID: 1, Connect: &proto.ConnectReply{}})
@@ -212,4 +221,58 @@ func mustEncode(t *testing.T, v any) *proto.Frame {
 		t.Fatalf("encode: %v", err)
 	}
 	return f
+}
+
+// TestAttach_DoesNotResurrectARemovedConnection_M4 is the invariant ErrNotRegistered
+// exists for, stated at the top of this package: a reader goroutine's in-flight subscribe
+// must not resurrect a connection that close has just deregistered, because a resurrected
+// connection is resident in the channel map forever — fan-out writes to a dead connection
+// and the refcount never reaches zero.
+//
+// insertLocked honoured it. Attach did not: it called registerLocked, which recreates the
+// maps Remove had just deleted, and every channel on the connect frame then went back
+// into the hub. The path is not hypothetical. SIGTERM closes a connection whose reader is
+// blocked in Authorize, Close deregisters it, the webhook then answers 200, and the
+// connect frame proceeds to Attach with a Sink nothing is going to remove again.
+func TestAttach_DoesNotResurrectARemovedConnection_M4(t *testing.T) {
+	t.Parallel()
+	h := newTestHub(t, newBus())
+	s := newSink("c1", "u1")
+	mustAdd(t, h, s)
+	mustSubscribe(t, h, s, "room-1")
+
+	// What Close does: deregister, then end the socket.
+	h.Remove(s)
+
+	var granted []string
+	called := 0
+	h.Attach(s, []string{"room-2"}, func(g []string) *proto.Frame {
+		called++
+		granted = append(make([]string, 0, len(g)), g...)
+		return nil
+	})
+
+	if called != 1 {
+		t.Fatalf("ack called %d times, want exactly 1", called)
+	}
+	if len(granted) != 0 {
+		t.Fatalf("granted = %v, want nothing: the connection was deregistered before this call", granted)
+	}
+	if got := h.Subscriptions(s); len(got) != 0 {
+		t.Fatalf("Subscriptions = %v, want none", got)
+	}
+
+	h.mu.RLock()
+	_, mirror := h.subs[s]
+	_, indexed := h.clients[s.ID()]
+	_, filed := h.userOf[s]
+	channels := len(h.channels)
+	h.mu.RUnlock()
+	if mirror || indexed || filed || channels != 0 {
+		t.Fatalf("the connection came back: mirror=%v clients=%v userOf=%v channels=%d — it is now resident forever (M4)",
+			mirror, indexed, filed, channels)
+	}
+	if got := desiredSnapshot(h); len(got) != 1 || got[0] != h.ControlKey() {
+		t.Fatalf("desired = %v, want only the control key: a resurrected channel never unsubscribes upstream", got)
+	}
 }

@@ -50,6 +50,22 @@ func TestNew_Rejections(t *testing.T) {
 			want: "webhook_retries",
 		},
 		{
+			// clampExpiry compares against the maximum before it clamps up to the
+			// minimum, so an unset app.max_expiry gives every connection ExpiresIn 0.
+			// The caller reads that as "no expiry", the expiry timer is never armed, and
+			// FR-22 is silently off for the life of the process. The three rejections
+			// above exist for exactly this class of hand-made config; this one was
+			// missing.
+			name: "max_expiry unset",
+			mut:  func(o *Options) { o.App.MaxExpiry = 0 },
+			want: "max_expiry",
+		},
+		{
+			name: "max_expiry below min_expiry",
+			mut:  func(o *Options) { o.App.MaxExpiry = config.Duration(30 * time.Second) },
+			want: "max_expiry",
+		},
+		{
 			name: "unparseable trusted proxy",
 			mut:  func(o *Options) { o.TrustedProxies = []string{"10.0.0.0/999"} },
 			want: "trusted_proxies",

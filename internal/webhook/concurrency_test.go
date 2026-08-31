@@ -308,3 +308,57 @@ func TestCall_CallerCancellationBeforeTheCall(t *testing.T) {
 		t.Errorf("the application saw %d requests, want 0", n)
 	}
 }
+
+// TestAcquire_ReleasesTheWaitTimer_C2: a connection that queues and then gets its slot
+// must not leave its connect_timeout timer armed.
+//
+// With the real clock a `time.After` in a select whose other arms usually win is a timer
+// the runtime holds until it fires, and nothing stops it. At app.connect_queue: 4096 and
+// app.connect_timeout: 10s that is up to 4096 live timers for ten seconds, during exactly
+// the reconnect storm the bounded queue exists to survive (docs/13-review-findings.md C2).
+//
+// The wait is still bounded — by the caller's context, which carries app.connect_timeout
+// from internal/conn, and by the timer itself for a caller that supplies neither.
+func TestAcquire_ReleasesTheWaitTimer_C2(t *testing.T) {
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	release := sync.OnceFunc(func() { close(block) })
+	app := newStubApp(t, func(w http.ResponseWriter, _ int) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-block
+		okBody(w, 0)
+	})
+	t.Cleanup(release)
+
+	clock := newFakeClock(baseTime)
+	cfg := testApp(app.server.URL)
+	cfg.WebhookConcurrency = 1
+	c := newTestClient(t, Options{App: cfg, Clock: clock})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); mustCallOK(t, c) }()
+	<-started
+
+	queued := make(chan Result, 1)
+	go func() { queued <- c.Call(t.Context(), testRequest()) }()
+
+	clock.awaitTimer(t) // the second call is in the queue, waiting
+	release()           // the first call completes and hands over its slot
+
+	select {
+	case res := <-queued:
+		mustAuthorized(t, res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued call did not complete within 5s of the slot being freed")
+	}
+	wg.Wait()
+
+	if n := clock.outstanding(); n != 0 {
+		t.Fatalf("%d timer(s) still armed after the wait ended; a queued connection must "+
+			"release its connect_timeout timer, not hold it for the full budget (C2)", n)
+	}
+}
