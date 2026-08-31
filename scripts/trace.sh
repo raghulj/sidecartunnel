@@ -26,7 +26,9 @@ printf '%-10s %s\n' "REQUIREMENT" "NAMED BY"
 for id in $ids; do
 	# Match the id as it appears in Go test identifiers and comments: FR-14 or FR14.
 	alt=$(printf '%s' "$id" | tr -d '-')
-	n=$(grep -rlE "(${id}|${alt})" --include='*_test.go' . 2>/dev/null | sort -u | grep -c . || true)
+	# `find | xargs grep` rather than grep --include: --include is a GNU extension that
+	# busybox does not implement, and this script advertises itself as portable.
+	n=$(find . -name '*_test.go' -type f -exec grep -lE "(${id}|${alt})" {} + 2>/dev/null | sort -u | grep -c . || true)
 	if [ "${n:-0}" -gt 0 ]; then
 		printf '%-10s %s\n' "$id" "${n} test file(s)"
 		continue

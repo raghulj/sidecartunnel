@@ -21,9 +21,15 @@
 set -eu
 
 PROFILE="${1:-coverage.out}"
-PKGDIRS="$(mktemp -t stcover)"
-TESTLOG="$(mktemp -t sttest)"
-MERGED="$(mktemp -t stmerged)"
+# A full template rather than `mktemp -t NAME`. BSD mktemp treats -t's argument as a
+# prefix and appends randomness; GNU mktemp requires the template to contain XXXXXX and
+# fails with "too few X's in template". The -t form therefore worked on the maintainer's
+# macOS and failed on every Linux CI runner, which is how this script sat broken through
+# twenty-seven commits while local runs were green.
+: "${TMPDIR:=/tmp}"
+PKGDIRS="$(mktemp "${TMPDIR%/}/stcover.XXXXXX")"
+TESTLOG="$(mktemp "${TMPDIR%/}/sttest.XXXXXX")"
+MERGED="$(mktemp "${TMPDIR%/}/stmerged.XXXXXX")"
 trap 'rm -f "${PKGDIRS}" "${TESTLOG}" "${MERGED}"' EXIT
 
 go list -f '{{.ImportPath}} {{.Dir}}' ./... > "${PKGDIRS}"
