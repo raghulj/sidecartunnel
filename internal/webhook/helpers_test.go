@@ -290,14 +290,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// isRefused reports whether the Result is a Refused. Result is not an error — Authorized
-// is not a failure — so tests assert with a type switch rather than errors.As.
-func isRefused(res Result) bool {
-	_, ok := res.(Refused)
-	return ok
-}
-
-// isUnavailable reports whether the Result is an Unavailable.
+// isUnavailable reports whether the Result is an Unavailable. Result is not an error —
+// Authorized is not a failure — so tests assert with a type switch rather than errors.As.
 func isUnavailable(res Result) bool {
 	_, ok := res.(Unavailable)
 	return ok

@@ -72,6 +72,14 @@ FATAL config: server.allowed_origins is empty — refusing to start.
 | `read_header_timeout` | duration | `5s` | Guards against slowloris on the upgrade |
 | `trusted_proxies` | []string | `[]` | CIDRs whose `X-Forwarded-For` is believed. Default trusts nothing, so `X-St-Forwarded-For` is the socket peer — see FR-24. |
 
+**List proxy addresses here, not the network your clients sit on.** Trusting a CIDR means
+trusting every address inside it, and the FR-24 walk steps left past every trusted hop. Set
+`trusted_proxies: ["10.0.0.0/8"]` when the proxy is `10.0.0.7` and clients are also inside
+10/8, and a client's own prepended hop is walked off along with the real proxy — the header
+becomes attacker-controlled again. `["10.0.0.7/32"]`, the proxy itself, is the correct
+form. This is the same reasoning as `allowed_origins` taking exact origins rather than a
+suffix: a broad match is a trust decision about everything it covers.
+
 `allowed_origins` has no default on purpose. A default of `["*"]` would be a security hole
 shipped as a convenience, and a default of `[]` that silently accepts everything would be
 worse. Refusing to start is the only honest option.

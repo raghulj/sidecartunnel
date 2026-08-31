@@ -17,20 +17,35 @@ import (
 //
 //   - The peer is not inside trusted: the result is the socket peer address and the
 //     inbound header is DISCARDED. Never merged, never appended to, never passed through.
-//   - The peer is inside trusted: the result is the leftmost hop of the inbound header
-//     that is not itself inside trusted, falling back to the peer when there is no such
-//     hop.
+//   - The peer is inside trusted: walk the inbound header from its RIGHTMOST entry
+//     leftwards while each hop is itself inside trusted, and take the first untrusted
+//     address. When every entry is trusted, fall back to the peer.
 //
 // Discarding is the whole point of FR-24. Forwarding a client-supplied
 // X-Forwarded-For: 127.0.0.1 from the public internet would let an attacker reach an
 // application's localhost trust path — an auth bypass in the application, delivered by
 // the gateway, under a header prefix implying the gateway vouched for it.
 //
-// A hop that does not parse as an IP address is skipped rather than forwarded. The header
-// is attacker-controlled text right up until a trusted proxy rewrites it, and this
-// function must never place anything but an address into a header the application
-// believes. It returns "" only when the peer address itself is unusable — a Unix socket,
-// say — in which case the caller sends no address at all rather than an invented one.
+// Walking from the right rather than the left is the second half of the same defence. A
+// proxy appends what it actually observed, so the rightmost entries are the ones the
+// infrastructure wrote and the leftmost are the ones a client could have invented. Taking
+// the leftmost untrusted entry lets a client behind a trusted proxy prepend a fake hop
+// and have the gateway forward it — the spoofing this requirement exists to prevent,
+// surviving one layer in.
+//
+// The walk stops at the first hop that does not parse as an IP address. Such a hop cannot
+// be shown to be a trusted proxy, and everything to its left is less trustworthy rather
+// than more, so the peer is used instead. Nothing but an address is ever placed into a
+// header the application believes.
+//
+// One consequence is worth stating because it is a configuration trap: trusting a CIDR
+// means trusting everything inside it. If server.trusted_proxies is a whole internal
+// network that also contains the clients, a client's own hop is walked off like any
+// proxy's and its prepend is what remains. Configure it as the proxy addresses, not the
+// network they sit in.
+//
+// It returns "" only when the peer address itself is unusable — a Unix socket, say — in
+// which case the caller sends no address at all rather than an invented one.
 //
 // It performs no I/O and is safe to call concurrently: trusted is never mutated after
 // New.
@@ -46,12 +61,15 @@ func forwardedFor(peer, xff string, trusted []netip.Prefix) string {
 		return peerAddr.String()
 	}
 
-	for hop := range strings.SplitSeq(xff, ",") {
-		addr, valid := parseHop(strings.TrimSpace(hop))
-		if !valid || within(addr, trusted) {
-			continue
+	hops := strings.Split(xff, ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, valid := parseHop(strings.TrimSpace(hops[i]))
+		if !valid {
+			break
 		}
-		return addr.String()
+		if !within(addr, trusted) {
+			return addr.String()
+		}
 	}
 	return peerAddr.String()
 }

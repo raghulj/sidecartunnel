@@ -98,9 +98,14 @@ func (r Refused) Error() string {
 // and glob.ErrReservedPrefix through the wrap chain (docs/14-coding-standards.md §6).
 func (r Refused) Unwrap() error { return r.Err }
 
-// Unavailable is a transient failure: a 5xx, a timeout, a transport error, an exhausted
-// authorization budget, or a full connect queue. The caller closes with
-// proto.CloseAuthUnavailable (3008), reconnect true, and a spread retry_after.
+// Unavailable is a transient failure: a 403, a 5xx, an unlisted status, a timeout, a
+// transport error, an exhausted authorization budget, or a full connect queue. The caller
+// closes with proto.CloseAuthUnavailable (3008), reconnect true, and a spread
+// retry_after.
+//
+// A 403 is here rather than in Refused because it is a statement about the request and
+// not about the user, and a gateway-side fault must never be expressed to users as a
+// permanent refusal (FR-6; see ErrRequestRejected).
 //
 // Overflow of the concurrency queue is deliberately here and not in Refused. The earlier
 // design let the handshake timeout fire on queued connections and close them 3001,
@@ -144,6 +149,22 @@ func (u Unavailable) Unwrap() error { return u.Err }
 // sockets each holding a captured cookie, and a permanent close would lock out exactly
 // the users a reconnect storm caught (NFR-4, docs/13-review-findings.md C2).
 var ErrQueueOverflow = errors.New("app.connect_queue is full")
+
+// ErrRequestRejected is the cause on an Unavailable produced by a 403: the application
+// rejected the *request*, not the user. A bad signature, a timestamp outside the ±300s
+// window, an unknown key during a secret rotation.
+//
+// It is transient, and that is the point. A replica whose clock has drifted past 300s
+// gets a 403 on every call; merged into 401 it would lock out every user it serves with
+// reconnect: false, and they would stay locked out until a human noticed. As a transient
+// failure they retry, the fleet degrades to the healthy replicas, and the operator gets
+// an alarm instead of an outage (FR-6, docs/04-integration.md §1.3).
+//
+// It is not retried in-process: an immediate retry carries the same bad signature or the
+// same skewed clock. It is logged at ERROR, rate-limited, and counted separately from
+// 5xx, so "my application is down" and "my gateway cannot authenticate to my application"
+// are distinguishable at a glance.
+var ErrRequestRejected = errors.New("connect webhook rejected the request itself")
 
 // ErrMalformedResponse is the cause on a Refused produced by a 2xx whose body the gateway
 // could not use: not JSON, missing user, missing channels, missing expires_in, or a grant

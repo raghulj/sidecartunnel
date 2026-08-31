@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -180,16 +181,16 @@ func TestCall_SignsWithTheFirstSecret_Rotation(t *testing.T) {
 
 	cfg.WebhookSecrets = []string{"ffffffffffffffffffffffffffffffff", testSecret}
 	c = newTestClient(t, Options{App: cfg})
-	if res := c.Call(t.Context(), testRequest()); !isRefused(res) {
-		t.Errorf("signing with the second secret was accepted: Result = %T", res)
+	res := c.Call(t.Context(), testRequest())
+	if !isUnavailable(res) {
+		t.Errorf("signing with the second secret was accepted: Result = %T, want Unavailable", res)
 	}
 }
 
 // TestCall_TimestampSkewAtTheBoundary drives the ±300s window from
 // docs/04-integration.md §1.1 through a verifying application. The gateway's timestamp is
-// its own clock, so a gateway whose clock has drifted is refused — permanently, which is
-// the correct and painful answer: retrying a signature the application will never accept
-// is a denial-of-service against it.
+// its own clock, so a replica whose clock has drifted past the window is rejected on
+// every call — and that must degrade the replica, not lock out its users (FR-6).
 func TestCall_TimestampSkewAtTheBoundary(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -217,9 +218,19 @@ func TestCall_TimestampSkewAtTheBoundary(t *testing.T) {
 				t.Fatalf("Result = %T, want Authorized == %v", res, tt.wantA)
 			}
 			if !tt.wantA {
-				// A 403 is a refusal, not a failure: never retried (FR-6).
+				// The skewed replica is the case FR-6's 401/403 split exists for. Its
+				// 403 must be transient, so the fleet degrades to the healthy replicas
+				// and the operator gets an alarm, instead of every user this replica
+				// serves being locked out with reconnect: false.
+				u, ok := res.(Unavailable)
+				if !ok {
+					t.Fatalf("Result = %T, want Unavailable: a skewed clock is a gateway fault, not a decision about the user", res)
+				}
+				if u.CloseCode() != 3008 || !u.Reconnect() {
+					t.Errorf("closes %d reconnect=%v, want 3008 true", u.CloseCode(), u.Reconnect())
+				}
 				if n := app.count(); n != 1 {
-					t.Errorf("the application saw %d requests, want 1: a 403 must not be retried", n)
+					t.Errorf("the application saw %d requests, want 1: a 403 must not be retried in-process", n)
 				}
 			}
 		})
@@ -247,11 +258,21 @@ func TestCall_ForwardedFor_FR24(t *testing.T) {
 			wantNoIP: "127.0.0.1",
 		},
 		{
-			name:    "trusted peer, leftmost untrusted hop",
+			name:    "trusted peer, rightmost untrusted hop",
 			peer:    "10.0.0.7:4000",
 			xff:     "198.51.100.4, 10.0.0.3",
 			trusted: []string{"10.0.0.0/8"},
 			want:    "198.51.100.4",
+		},
+		{
+			// The prepend the rightmost walk exists to ignore: the client at 10.0.0.5 is
+			// not itself a configured proxy, so the walk stops there and never reaches
+			// the invented hop (FR-24).
+			name:    "trusted peer, spoofed prepend does not reach the application",
+			peer:    "10.0.0.7:4000",
+			xff:     "1.2.3.4, 10.0.0.5",
+			trusted: []string{"10.0.0.7/32"},
+			want:    "10.0.0.5",
 		},
 	}
 	for _, tt := range tests {
@@ -317,10 +338,20 @@ func TestCall_StatusTable_FR6(t *testing.T) {
 			wantRequests: 1,
 		},
 		{
-			name:         "403 is a refusal and is never retried",
-			respond:      func(w http.ResponseWriter, _ int) { w.WriteHeader(http.StatusForbidden) },
-			wantRefused:  true,
-			wantStatus:   403,
+			// 403 is a statement about the REQUEST, not the user: a bad signature, a
+			// timestamp outside the ±300s window, an unknown key during a rotation. That
+			// is a gateway-side fault, and a gateway fault must never be expressed to
+			// users as a permanent refusal — a replica whose clock has drifted would
+			// otherwise lock out every user it serves until a human noticed
+			// (docs/04-integration.md §1.3, FR-6).
+			name:        "403 is a failure, not a refusal",
+			respond:     func(w http.ResponseWriter, _ int) { w.WriteHeader(http.StatusForbidden) },
+			wantRefused: false,
+			wantStatus:  403,
+			// Transient, but not retried in-process: an immediate retry carries the same
+			// bad signature or the same skewed clock, so it is load with no prospect of a
+			// different answer. The client comes back after its retry_after instead
+			// (docs/08-config.md §3, app.webhook_retries).
 			wantRequests: 1,
 		},
 		{
@@ -979,5 +1010,162 @@ func TestCall_DrainErrorIsHarmless(t *testing.T) {
 	}
 	if u.Status != 500 {
 		t.Errorf("Unavailable.Status = %d, want 500: the status line decided the answer", u.Status)
+	}
+}
+
+// TestCall_401And403AreDifferentTypes_FR6 is the split stated directly.
+//
+// 401 is a statement about the user: they may not connect, and the client must stop
+// asking. 403 is a statement about the request — a bad signature, a timestamp outside the
+// ±300s window, an unknown key during a rotation — which is a gateway-side fault. Merged,
+// a replica whose clock drifts past 300s locks out every user it serves with
+// reconnect: false, and they stay locked out until a human notices. Split, they retry,
+// the fleet degrades to the healthy replicas, and the operator gets an alarm instead of
+// an outage (FR-6, docs/04-integration.md §1.3).
+func TestCall_401And403AreDifferentTypes_FR6(t *testing.T) {
+	call := func(status int) Result {
+		t.Helper()
+		app := newStubApp(t, func(w http.ResponseWriter, _ int) { w.WriteHeader(status) })
+		cfg := testApp(app.server.URL)
+		cfg.WebhookRetries = 2
+		c := newTestClient(t, Options{App: cfg})
+		res := c.Call(t.Context(), testRequest())
+		if n := app.count(); n != 1 {
+			t.Errorf("a %d produced %d requests, want 1: neither is retried in-process", status, n)
+		}
+		return res
+	}
+
+	unauthorized := call(http.StatusUnauthorized)
+	forbidden := call(http.StatusForbidden)
+
+	refused, ok := unauthorized.(Refused)
+	if !ok {
+		t.Fatalf("401 gave %T, want Refused", unauthorized)
+	}
+	unavailable, ok := forbidden.(Unavailable)
+	if !ok {
+		t.Fatalf("403 gave %T, want Unavailable: a gateway fault must not be a permanent refusal", forbidden)
+	}
+
+	// Distinguishable by type, which is the whole point of Result being an interface.
+	if _, alsoRefused := forbidden.(Refused); alsoRefused {
+		t.Error("403 is also a Refused")
+	}
+	if _, alsoUnavailable := unauthorized.(Unavailable); alsoUnavailable {
+		t.Error("401 is also an Unavailable")
+	}
+
+	if refused.CloseCode() != 3003 || refused.Reconnect() {
+		t.Errorf("401 closes %d reconnect=%v, want 3003 false", refused.CloseCode(), refused.Reconnect())
+	}
+	if unavailable.CloseCode() != 3008 || !unavailable.Reconnect() {
+		t.Errorf("403 closes %d reconnect=%v, want 3008 true", unavailable.CloseCode(), unavailable.Reconnect())
+	}
+	if !errors.Is(unavailable, ErrRequestRejected) {
+		t.Errorf("403 does not unwrap to ErrRequestRejected: %v", unavailable)
+	}
+	if errors.Is(refused, ErrRequestRejected) {
+		t.Error("401 unwraps to ErrRequestRejected")
+	}
+}
+
+// TestCall_RejectionIsCountedSeparately_FR6: "my application is down" and "my gateway
+// cannot authenticate to my application" must be distinguishable at a glance, so a 403 is
+// counted apart from 5xx (docs/04-integration.md §1.3).
+func TestCall_RejectionIsCountedSeparately_FR6(t *testing.T) {
+	app := newStubApp(t, func(w http.ResponseWriter, n int) {
+		switch n {
+		case 1:
+			w.WriteHeader(http.StatusForbidden)
+		case 2:
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			okBody(w, n)
+		}
+	})
+	cfg := testApp(app.server.URL)
+	cfg.WebhookRetries = 0
+	c := newTestClient(t, Options{App: cfg, Clock: newFakeClock(baseTime)})
+
+	for range 4 {
+		c.Call(t.Context(), testRequest())
+	}
+
+	got := c.Stats()
+	want := Stats{Authorized: 1, Refused: 1, Rejected: 1, Failed: 1}
+	if got != want {
+		t.Errorf("Stats() = %+v, want %+v", got, want)
+	}
+}
+
+// TestCall_RejectionIsLoggedOncePerInterval_FR6. Retrying cannot fix a bad secret or a
+// skewed clock, so the 403 is loud — but at 25,000 reconnecting connections it must be
+// loud once per interval and not once per connection, or the signal that tells the
+// operator what is wrong is buried under the incident it is describing.
+func TestCall_RejectionIsLoggedOncePerInterval_FR6(t *testing.T) {
+	var out syncBuffer
+	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	app := newStubApp(t, func(w http.ResponseWriter, _ int) { w.WriteHeader(http.StatusForbidden) })
+	clock := newFakeClock(baseTime)
+	cfg := testApp(app.server.URL)
+	cfg.WebhookRetries = 0
+	c := newTestClient(t, Options{
+		App:               cfg,
+		Clock:             clock,
+		Logger:            logger,
+		RejectLogInterval: time.Minute,
+	})
+
+	for range 5 {
+		c.Call(t.Context(), testRequest())
+	}
+	if got := strings.Count(out.String(), `"level":"ERROR"`); got != 1 {
+		t.Errorf("five rejections logged %d ERROR lines, want 1:\n%s", got, out.String())
+	}
+
+	// Still inside the interval: still one line.
+	clock.advance(59 * time.Second)
+	c.Call(t.Context(), testRequest())
+	if got := strings.Count(out.String(), `"level":"ERROR"`); got != 1 {
+		t.Errorf("a rejection inside the interval logged again: %d ERROR lines", got)
+	}
+
+	// Past it: the operator hears about it again, because it is still broken.
+	clock.advance(2 * time.Second)
+	c.Call(t.Context(), testRequest())
+	if got := strings.Count(out.String(), `"level":"ERROR"`); got != 2 {
+		t.Errorf("a rejection past the interval logged %d ERROR lines, want 2", got)
+	}
+
+	logged := out.String()
+	for _, want := range []string{"403", "8f2c1e04a7b3d915"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the ERROR line does not contain %q:\n%s", want, logged)
+		}
+	}
+	// Suppressed rejections are still visible at debug: the count of connections
+	// affected is what an operator asks for next.
+	if got := strings.Count(logged, `"level":"DEBUG"`); got != 5 {
+		t.Errorf("suppressed rejections logged %d DEBUG lines, want 5", got)
+	}
+	// And nothing here carries a secret (NFR-7).
+	for _, banned := range []string{testSecret, "s3cr3t-session-value"} {
+		if strings.Contains(logged, banned) {
+			t.Errorf("the rejection log contains a secret (NFR-7):\n%s", logged)
+		}
+	}
+}
+
+// TestCall_RejectLogIntervalDefaults: an operator who configures nothing still gets one
+// line per minute rather than one per connection.
+func TestCall_RejectLogIntervalDefaults(t *testing.T) {
+	app := newStubApp(t, func(w http.ResponseWriter, _ int) { w.WriteHeader(http.StatusForbidden) })
+	c := newTestClient(t, Options{App: testApp(app.server.URL)})
+	if c.rejectLogInterval != defaultRejectLogInterval {
+		t.Errorf("rejectLogInterval = %s, want %s", c.rejectLogInterval, defaultRejectLogInterval)
 	}
 }

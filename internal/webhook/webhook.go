@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/config"
@@ -26,6 +28,12 @@ import (
 // clients buffer an unbounded response. A body over the cap is truncated, so it does not
 // parse, and the connection is refused rather than the gateway growing to hold it.
 const maxResponseBytes = 64 << 10
+
+// defaultRejectLogInterval is how often a 403 is logged at ERROR when Options leaves it
+// unset. One line a minute is enough to raise an alarm and few enough that a fleet-wide
+// rejection — every connection on every replica, which is what a bad secret looks like —
+// cannot bury the signal under the incident it describes.
+const defaultRejectLogInterval = time.Minute
 
 // Clock is the time source. It exists so tests move time instead of spending it: a sleep
 // in a test is either a flake on a loaded CI box or a wasted second, and usually both
@@ -89,6 +97,16 @@ type Options struct {
 	// Logger defaults to slog.Default(). Nothing logged here carries a cookie, a
 	// signature, a secret or a body (NFR-7).
 	Logger *slog.Logger
+
+	// RejectLogInterval is how often a webhook 403 is logged at ERROR. Defaults to
+	// defaultRejectLogInterval.
+	//
+	// A 403 means the gateway cannot authenticate to the application, so it is loud —
+	// but a bad secret or a skewed clock rejects every connection on the replica, and one
+	// ERROR line per connection is an outage in the log pipeline on top of the outage
+	// being reported. Suppressed occurrences are still logged at debug and always
+	// counted (FR-6).
+	RejectLogInterval time.Duration
 }
 
 // Request is one connection's input to the connect webhook. It is passed by value and
@@ -146,6 +164,29 @@ type responseBody struct {
 	ExpiresIn *int64   `json:"expires_in"`
 }
 
+// Stats are a Client's cumulative counters, for metrics and for tests. They are read with
+// Client.Stats.
+//
+// Rejected is kept apart from Failed on purpose. A 5xx means the application is unwell; a
+// 403 means the gateway cannot authenticate to it — a bad secret, a skewed clock, a key
+// removed mid-rotation. Those need different people and different fixes, and a single
+// "webhook errors" counter makes them indistinguishable at exactly the moment that
+// matters (docs/04-integration.md §1.3).
+type Stats struct {
+	// Authorized counts calls that produced an Authorized, including cache hits.
+	Authorized uint64
+
+	// Refused counts permanent refusals: a 401, and a 2xx whose body was unusable.
+	Refused uint64
+
+	// Rejected counts 403s — the gateway's own requests being rejected.
+	Rejected uint64
+
+	// Failed counts every other transient failure: 5xx, unlisted statuses, timeouts,
+	// transport errors, queue overflow, a spent budget.
+	Failed uint64
+}
+
 // Client calls the application's connect webhook. It is the gateway's single integration
 // point for turning a browser's cookie into an identity and a grant set
 // (docs/04-integration.md §1).
@@ -186,6 +227,18 @@ type Client struct {
 	clock      Clock
 	nonce      func() string
 	log        *slog.Logger
+
+	// rejectLogInterval and lastRejectLog rate-limit the ERROR line for a 403. The mutex
+	// is held for a clock read and a comparison, never across I/O.
+	rejectLogInterval time.Duration
+	rejectLogMu       sync.Mutex
+	lastRejectLog     time.Time
+
+	// Counters, incremented in logCall — the one place every path passes through.
+	authorized atomic.Uint64
+	refused    atomic.Uint64
+	rejected   atomic.Uint64
+	failed     atomic.Uint64
 
 	// cache is nil unless app.cache_ttl is positive. Off is the default and the right
 	// one: a cached entry survives a revocation (docs/13-review-findings.md C4).
@@ -243,6 +296,11 @@ func New(opts Options) (*Client, error) {
 		clock:          opts.Clock,
 		nonce:          opts.Nonce,
 		log:            opts.Logger,
+
+		rejectLogInterval: opts.RejectLogInterval,
+	}
+	if c.rejectLogInterval <= 0 {
+		c.rejectLogInterval = defaultRejectLogInterval
 	}
 
 	if c.httpClient == nil {
@@ -395,7 +453,16 @@ func (c *Client) attempts(ctx context.Context, req Request, deadline time.Time) 
 			return Unavailable{Err: fmt.Errorf("authorization budget app.connect_timeout=%s is spent: %w", c.connectTimeout, context.DeadlineExceeded)}
 		}
 		res := c.attempt(ctx, req, forwarded, min(remaining, c.webhookTimeout))
-		if _, transient := res.(Unavailable); !transient {
+		failure, transient := res.(Unavailable)
+		if !transient {
+			return res
+		}
+		if errors.Is(failure, ErrRequestRejected) {
+			// Transient for the client, but not worth an immediate second attempt: a
+			// retry carries the same signature computed from the same secret and the
+			// same clock, so it is load on the application with no prospect of a
+			// different answer. app.webhook_retries is documented as applying to 5xx and
+			// timeouts only (docs/08-config.md §3).
 			return res
 		}
 		last = res
@@ -464,12 +531,22 @@ func setIfPresent(h http.Header, key, value string) {
 // consequential logic in the package.
 func (c *Client) classify(resp *http.Response) Result {
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		// A decision: this user may not connect, and the client must stop asking. The
-		// body is not read and never will be — it is the application's error page, and
-		// applications put session identifiers in those (NFR-7).
+	case resp.StatusCode == http.StatusUnauthorized:
+		// A decision about the user: they may not connect, and the client must stop
+		// asking. The body is not read and never will be — it is the application's error
+		// page, and applications put session identifiers in those (NFR-7).
 		c.drain(resp)
 		return Refused{Status: resp.StatusCode}
+
+	case resp.StatusCode == http.StatusForbidden:
+		// A statement about the request, not the user: a bad signature, a timestamp
+		// outside the ±300s window, an unknown key during a rotation. That is a
+		// gateway-side fault, and a gateway fault must never be expressed to users as a
+		// permanent refusal — a replica whose clock has drifted would otherwise lock out
+		// every user it serves until a human noticed (FR-6,
+		// docs/04-integration.md §1.3).
+		c.drain(resp)
+		return Unavailable{Status: resp.StatusCode, Err: ErrRequestRejected}
 
 	case resp.StatusCode >= 200 && resp.StatusCode <= 299:
 		return c.parse(resp)
@@ -591,9 +668,11 @@ func (c *Client) logCall(clientID string, res Result, cached bool, elapsed time.
 
 	switch v := res.(type) {
 	case Authorized:
+		c.authorized.Add(1)
 		c.log.Debug("connect webhook authorized",
 			append(attrs, "user", v.User, "expires_in_s", int64(v.ExpiresIn.Seconds()))...)
 	case Refused:
+		c.refused.Add(1)
 		if errors.Is(v, ErrMalformedResponse) {
 			c.log.Warn("connect webhook returned an unusable body; refusing the connection",
 				append(attrs, "status", v.Status, "err", v.Err)...)
@@ -602,8 +681,51 @@ func (c *Client) logCall(clientID string, res Result, cached bool, elapsed time.
 		c.log.Info("connect webhook refused the connection",
 			append(attrs, "status", v.Status, "reconnect", false)...)
 	case Unavailable:
+		if errors.Is(v, ErrRequestRejected) {
+			c.rejected.Add(1)
+			c.logRejection(attrs, v)
+			return
+		}
+		c.failed.Add(1)
 		c.log.Warn("connect webhook unavailable",
 			append(attrs, "status", v.Status, "reconnect", true, "err", v.Err)...)
+	}
+}
+
+// logRejection emits the 403 line: ERROR at most once per rejectLogInterval, debug for
+// every occurrence in between.
+//
+// Loud, because retrying cannot fix a bad secret or a skewed clock and somebody has to go
+// and look. Rate-limited, because that same bad secret rejects every connection on the
+// replica, and one ERROR line per connection buries the signal under the incident it is
+// describing. Every occurrence is still counted (FR-6, docs/04-integration.md §1.3).
+func (c *Client) logRejection(attrs []any, res Unavailable) {
+	now := c.clock.Now()
+
+	c.rejectLogMu.Lock()
+	loud := c.lastRejectLog.IsZero() || now.Sub(c.lastRejectLog) >= c.rejectLogInterval
+	if loud {
+		c.lastRejectLog = now
+	}
+	c.rejectLogMu.Unlock()
+
+	if !loud {
+		c.log.Debug("connect webhook rejected the request",
+			append(attrs, "status", res.Status, "reconnect", true)...)
+		return
+	}
+	c.log.Error("connect webhook rejected the gateway's request; check app.webhook_secrets and this replica's clock",
+		append(attrs, "status", res.Status, "reconnect", true, "err", res.Err)...)
+}
+
+// Stats returns the Client's cumulative counters. It never blocks and is safe to call
+// concurrently, including from a metrics scrape while connects are in flight.
+func (c *Client) Stats() Stats {
+	return Stats{
+		Authorized: c.authorized.Load(),
+		Refused:    c.refused.Load(),
+		Rejected:   c.rejected.Load(),
+		Failed:     c.failed.Load(),
 	}
 }
 
