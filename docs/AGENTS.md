@@ -83,10 +83,17 @@ test that runs two gateway instances against one Redis, not a reading of the cod
 
 ## 6. Dependencies
 
-The target dependency set is four: a websocket library (`gorilla/websocket` or
-`coder/websocket`), a Redis client, a YAML parser, and the Prometheus client. A fifth
-needs a reason written into the commit message. No framework, no DI container, no code
-generation, no ORM.
+The target **runtime** dependency set is four: a websocket library (`gorilla/websocket`),
+a Redis client (`redis/go-redis`), a YAML parser (`yaml.v3`), and the Prometheus client. A
+fifth needs a reason written into the commit message. No framework, no DI container, no
+code generation, no ORM.
+
+**Test-only dependencies are budgeted separately and held to one rule: they must not be
+able to reach a release binary.** `alicebob/miniredis` is the one so far. It earns its
+place because it makes `internal/bus` reach 100% coverage without Docker, so a contributor
+can run the full gate on a laptop and CI does not need a service container for the unit
+pass. It pulls `yuin/gopher-lua` transitively. Both are `// indirect`-free test imports and
+appear in no non-test file; `go build ./...` links neither.
 
 ## 7. What to do when the spec is wrong
 
