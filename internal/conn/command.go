@@ -128,8 +128,12 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 	// a non-retryable 3001 the moment the application slows down.
 	c.connectSeen.Store(true)
 
+	// The requested channels are bounded here, before they leave the connection for an
+	// outbound request the application must parse (docs/04-integration.md §1.1). They are
+	// a hint: the Authorizer answers with the grants, and every check below matches
+	// against those and never against this list.
 	authCtx, cancel := context.WithTimeout(ctx, c.connectTimeout)
-	auth, err := c.auth.Authorize(authCtx)
+	auth, err := c.auth.Authorize(authCtx, c.requested(cmd.Connect.Subs))
 	cancel()
 	if err != nil {
 		// FR-6: a refusal and a failure must not share a code. 3003 is a decision and
@@ -198,14 +202,47 @@ func (c *Conn) doConnect(ctx context.Context, cmd proto.Command) bool {
 // reply rather than failing the whole connect. The client compares what it asked for
 // against what it got.
 func (c *Conn) admissible(requested []string) []string {
-	out := make([]string, 0, len(requested))
+	return c.bounded(requested, func(channel string) bool { return c.checkChannel(channel) == nil })
+}
+
+// requested is the connect frame's subs as the connect webhook receives them, in
+// channels_requested (docs/04-integration.md §1.1).
+//
+// Two bounds apply, and they are the existing limits rather than a key of this
+// list's own: limits.max_subscriptions_per_conn caps the number of entries, and
+// limits.max_channel_length caps each one, so the field costs the application at most
+// their product — 500 × 255 ≈ 127 KiB at the documented defaults, and in practice far
+// less, because the whole frame is already capped at limits.max_frame_size. The list is
+// untrusted client input being copied into a request the gateway signs and sends at the
+// connection rate; unbounded, one connect frame is an amplification vector aimed at the
+// component least able to absorb it (NFR-4, docs/04-integration.md §1.1).
+//
+// Duplicates collapse for the same reason: 500 copies of one name are 500 names to the
+// body and one fact to the application.
+//
+// Grants are deliberately not consulted. They do not exist yet — this list is an input to
+// the call that produces them — and filtering by them afterwards would tell the
+// application only what it had just said, which is the opposite of a hint. A name that
+// could never be a subscription at all is dropped, because forwarding an empty or
+// oversize channel costs bytes and carries nothing.
+func (c *Conn) requested(subs []string) []string {
+	return c.bounded(subs, c.wellFormed)
+}
+
+// bounded deduplicates requested, keeps the channels keep accepts, and stops at
+// limits.max_subscriptions_per_conn.
+//
+// The capacity is the cap rather than the client's own count, so a frame full of names
+// the filter will reject cannot make the gateway reserve a slice sized by the client.
+func (c *Conn) bounded(requested []string, keep func(string) bool) []string {
+	out := make([]string, 0, min(len(requested), c.maxSubscriptions))
 	seen := make(map[string]struct{}, len(requested))
 	for _, channel := range requested {
 		if _, dup := seen[channel]; dup {
 			continue
 		}
 		seen[channel] = struct{}{}
-		if c.checkChannel(channel) != nil {
+		if !keep(channel) {
 			continue
 		}
 		if len(out) == c.maxSubscriptions {

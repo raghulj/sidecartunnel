@@ -59,6 +59,11 @@ The `Cookie` header is forwarded byte for byte. The gateway does not parse, vali
 decrypt or shorten it — session formats belong to the application. Any framework's own
 session middleware therefore resolves it unchanged.
 
+`channels_requested` is what the client's `connect` frame asked for. It is a hint you may
+scope your answer by, log, or ignore: the grants you return are the only thing the gateway
+enforces, and it arrives bounded by `limits.max_subscriptions_per_conn` and
+`limits.max_channel_length`. `04-integration.md` §1.1 is normative on both points.
+
 `X-St-Forwarded-For` is the client address as the gateway determined it. It is the socket
 peer unless the proxy's CIDR is listed in `server.trusted_proxies`.
 

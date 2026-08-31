@@ -161,14 +161,31 @@ type Authorization struct {
 type Authorizer interface {
 	// Authorize calls the application and returns its answer, or ErrUnauthorized wrapped
 	// when the application refused.
-	Authorize(ctx context.Context) (Authorization, error)
+	//
+	// requested is the connect frame's subs, forwarded to the application as
+	// channels_requested (docs/04-integration.md §1.1). It takes an argument rather than
+	// being captured with the cookie because the value does not exist until a frame has
+	// been read, which is after the connection was built.
+	//
+	// It is a **hint and never authority**. The application answers with the grants and
+	// the gateway matches against those; a channel appearing here confers nothing, and an
+	// implementation that merged the two would let every client write its own
+	// authorization.
+	//
+	// The connection bounds it before the call: at most limits.max_subscriptions_per_conn
+	// entries, each at most limits.max_channel_length bytes, deduplicated. It is
+	// untrusted client input on its way into an outbound request, and an unbounded list
+	// is an amplification vector into the application (NFR-4).
+	Authorize(ctx context.Context, requested []string) (Authorization, error)
 }
 
 // AuthorizerFunc adapts a function to Authorizer.
-type AuthorizerFunc func(ctx context.Context) (Authorization, error)
+type AuthorizerFunc func(ctx context.Context, requested []string) (Authorization, error)
 
 // Authorize calls f.
-func (f AuthorizerFunc) Authorize(ctx context.Context) (Authorization, error) { return f(ctx) }
+func (f AuthorizerFunc) Authorize(ctx context.Context, requested []string) (Authorization, error) {
+	return f(ctx, requested)
+}
 
 // CommandError is a command failure carrying the protocol error code to answer with.
 //

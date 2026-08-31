@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -486,5 +487,70 @@ func TestConnectTimeout_IsTheAuthorizationBudget_NFR4(t *testing.T) {
 	got := c.wantDisconnect(proto.CloseAuthUnavailable)
 	if !got.Reconnect || got.RetryAfter <= 0 {
 		t.Fatalf("disconnect = %+v, want reconnect true with a retry_after (NFR-4, FR-6)", got)
+	}
+}
+
+// TestConnect_ChannelsRequestedReachTheWebhook_FR3 completes docs/04-integration.md §1.1:
+// the normative request body carries channels_requested, and it is the connect frame's
+// subs that fill it.
+//
+// The value cannot be read where the rest of the request is built. serve captures the
+// cookie, the origin and the peer at the upgrade, which is before a single client frame
+// has been read; the subs arrive later, on the connect frame, and reach this call through
+// the Authorizer. An application reading the field must be able to tell "the client asked
+// for nothing" from "the gateway never tells me", and until the seam carried them it
+// could not.
+//
+// The second connection is the part that would rot quietly: the Request is captured by a
+// closure shared with every call for that connection, so a field written onto the closure
+// copy rather than onto the per-call value leaks one client's request into another's.
+func TestConnect_ChannelsRequestedReachTheWebhook_FR3(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+
+	r.dial().connect("room-1", "room-2")
+	if got := r.web.request(t, 0).ChannelsRequested; !slices.Equal(got, []string{"room-1", "room-2"}) {
+		t.Fatalf("ChannelsRequested = %v, want the connect frame's subs (docs/04-integration.md §1.1)", got)
+	}
+
+	r.dial().connect()
+	if got := r.web.request(t, 1).ChannelsRequested; len(got) != 0 {
+		t.Fatalf("ChannelsRequested = %v for a connect with no subs, want none: a request carried over from another connection", got)
+	}
+}
+
+// TestConnect_ChannelsRequestedConferNoGrant_FR5: the field is a hint the application may
+// ignore, and asking for a channel must never be a way of getting it.
+//
+// The stub application answers with room-* whatever it is asked for. A client that asks
+// for a channel outside that must be refused exactly as if it had never asked, because
+// the gateway's entire security model is matching a string against the list the
+// application supplied — a request that fed back into the grants would let every client
+// write its own.
+func TestConnect_ChannelsRequestedConferNoGrant_FR5(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+
+	c := r.dial()
+	reply := c.connect("room-1", "vault-1")
+
+	if _, ok := reply.Subs["vault-1"]; ok {
+		t.Fatalf("subs = %v: a channel was granted because it was requested (FR-5)", reply.Subs)
+	}
+	if _, ok := reply.Subs["room-1"]; !ok {
+		t.Fatalf("subs = %v, want the granted channel present", reply.Subs)
+	}
+	// The application did see the request, so the assertion above is about the grant and
+	// not about a field that never arrived.
+	if got := r.web.request(t, 0).ChannelsRequested; !slices.Equal(got, []string{"room-1", "vault-1"}) {
+		t.Fatalf("ChannelsRequested = %v, want both channels the client asked for", got)
+	}
+	c.send(map[string]any{"id": 2, "subscribe": map[string]any{"channel": "vault-1"}})
+	got := c.read()
+	if got.Error == nil {
+		t.Fatalf("subscribe to a requested-but-ungranted channel = %+v, want an error reply (FR-5)", got)
+	}
+	if got.Error.Code != proto.ErrPermissionDenied {
+		t.Fatalf("subscribe to a requested-but-ungranted channel = error %d, want %d (FR-5)", got.Error.Code, proto.ErrPermissionDenied)
 	}
 }

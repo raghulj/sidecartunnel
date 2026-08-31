@@ -51,6 +51,20 @@ scaffolding around it. The gateway does not run yet.
   requirement and the coverage gate.
 - MIT [`LICENSE`](LICENSE).
 
+### Fixed
+
+- **`channels_requested` is now sent.** The connect webhook's request body carries the
+  `subs` list from the client's `connect` frame, which
+  [`04-integration.md`](docs/04-integration.md) §1.1 has specified since the first draft
+  and which no code populated: the webhook request was built at the HTTP upgrade, before
+  any frame had been read, so an application reading the field could not tell "this client
+  asked for nothing" from "this gateway never tells me". `conn.Authorizer.Authorize` now
+  takes the requested channels alongside the context. They remain a hint — the application
+  answers with the grants and the gateway matches against those — and they are bounded by
+  `limits.max_subscriptions_per_conn` and `limits.max_channel_length` before they enter an
+  outbound request, because an unbounded list from an untrusted client is an amplification
+  vector into the application.
+
 ### Removed
 
 - **Breaking: the admin API.** `internal/admin`, the second HTTP listener, and the

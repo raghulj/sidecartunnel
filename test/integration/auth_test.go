@@ -139,28 +139,19 @@ func TestForeignOriginIsRefusedBeforeTheApplicationIsCalled(t *testing.T) {
 }
 
 // TestConnectWebhookReceivesTheRequestedChannels asserts the channels_requested field of
-// docs/04-integration.md §1.1: the connect frame's subs, forwarded to the application so
-// it can scope the grant list it computes.
+// docs/04-integration.md §1.1 across a real socket: the connect frame's subs, forwarded
+// to the application so it can scope the grant list it computes.
 //
-// It is skipped because it does not pass, and the cause is a seam in internal/, which
-// this suite may not edit. Written out so the fix has a test waiting for it:
+// The value is not available where the rest of the request is built. internal/server
+// captures the cookie, the origin and the peer at the HTTP upgrade, before any client
+// frame has been read; the subs arrive later, on the connect frame, and reach the webhook
+// call through conn.Authorizer, whose signature carries them. Until it did, the normative
+// request example showed a field the gateway never sent, and an application reading it
+// saw an empty list with no way to tell that from a connect frame that asked for nothing.
 //
-//	internal/server/handler.go builds the webhook.Request in serve, before the connect
-//	frame has arrived, so ChannelsRequested is never populated. It cannot be populated
-//	there: the field's value is in a frame that has not been read yet. The connection
-//	does have it by the time it authorizes, but conn.Authorizer takes only a context, so
-//	there is nowhere to put it.
-//
-// The field is documented as informational — the application answers with grants and the
-// gateway matches against those — so nothing is unsafe. What is wrong is that the
-// normative request example shows a field the gateway never sends, and an application
-// that reads it gets an empty list with no way to tell that from a connect frame that
-// asked for nothing.
-//
-// Un-skip this when conn.Authorizer can carry the requested channels.
+// The field is a hint and confers nothing — that half is
+// TestRequestingAChannelDoesNotGrantIt below.
 func TestConnectWebhookReceivesTheRequestedChannels(t *testing.T) {
-	t.Skip("known gap: the connect webhook request is built before the connect frame is read, so channels_requested is always empty (see this test's doc comment)")
-
 	t.Parallel()
 	c := newCluster(t, clusterOptions{Replicas: 1})
 
@@ -169,6 +160,49 @@ func TestConnectWebhookReceivesTheRequestedChannels(t *testing.T) {
 
 	if got := c.app.call(t, 0).ChannelsRequested; !slices.Equal(got, []string{"room-13", "room-14"}) {
 		t.Fatalf("channels_requested = %v, want the channels the connect frame asked for (docs/04-integration.md §1.1)", got)
+	}
+}
+
+// TestRequestingAChannelDoesNotGrantIt is the other half of channels_requested, and the
+// one that matters: the list travels to the application as a hint and has no authority
+// whatsoever. The application answers with the grants; the gateway matches against those.
+//
+// Here the application grants room-* and the client asks for a channel outside it. The
+// application saw the request — asserted, so this is a statement about the grant and not
+// about a field that never arrived — and the channel is still refused, in the connect
+// reply and again as a subscribe.
+//
+// It fails if anything ever merges the request into the grant set, which would let every
+// client write its own authorization and would end the gateway's one invariant: the
+// application decides, the gateway enforces (FR-5, docs/05-authorization.md).
+func TestRequestingAChannelDoesNotGrantIt(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t, clusterOptions{Replicas: 1, Grants: []string{"room-*"}})
+
+	client := c.r(0).dial()
+	reply := client.connect("room-13", "vault-9")
+
+	if _, ok := reply.Subs["vault-9"]; ok {
+		t.Fatalf("connect subs = %v: asking for a channel granted it (FR-5)", reply.Subs)
+	}
+	if _, ok := reply.Subs["room-13"]; !ok {
+		t.Fatalf("connect subs = %v, want the granted channel present", reply.Subs)
+	}
+	if got := c.app.call(t, 0).ChannelsRequested; !slices.Equal(got, []string{"room-13", "vault-9"}) {
+		t.Fatalf("channels_requested = %v, want both channels the client asked for", got)
+	}
+
+	f := client.subscribeFrame("vault-9")
+	if f.Error == nil || f.Error.Code != proto.ErrPermissionDenied {
+		t.Fatalf("subscribe to a requested-but-ungranted channel answered with %s, want error %d (FR-5)", f, proto.ErrPermissionDenied)
+	}
+
+	// Nothing is delivered on it either: the refusal is the subscription set, not just
+	// the reply.
+	c.publish("vault-9", event("message.new", map[string]any{"marker": "must-not-arrive"}))
+	c.publish("room-13", event("message.new", map[string]any{"marker": "granted"}))
+	if m := marker(t, client.wantPub("room-13", "message.new").Data); m != "granted" {
+		t.Fatalf("first push carried marker %q, want %q: a channel the client only asked for was delivered", m, "granted")
 	}
 }
 

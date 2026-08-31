@@ -31,6 +31,41 @@ X-St-Signature:    <see below>
 The `Cookie` header is forwarded **byte for byte**. The gateway does not parse, validate,
 decrypt, or shorten it. It cannot: session formats belong to the application.
 
+`channels_requested` is the `subs` array from the client's `connect` frame: what this
+browser asked for, before anything has been decided about it.
+
+**It is a hint and never authority.** The application answers with `channels`, and every
+subscription the gateway takes is matched against that answer alone. A channel that
+appears in `channels_requested` and not in `channels` is refused exactly as if it had never
+been asked for, in the connect reply and in every later `subscribe`. Nothing in the gateway
+reads the field back. It exists so an application can compute a *narrower* grant list —
+the three channels this page needs rather than every channel this user could ever hold —
+and so that a request for a channel a user may not have is visible to the application that
+would refuse it. An application may scope its answer by it, log it, or ignore it entirely.
+What it must not do is treat it as anything but client-supplied text: the signature proves
+the gateway sent the request, not that what the client asked for is reasonable.
+
+**It is bounded before it is sent.** At most `limits.max_subscriptions_per_conn` entries
+(default 500), each at most `limits.max_channel_length` bytes (default 255), duplicates
+collapsed, empty and oversize names dropped, in the order the client asked. No key of its
+own governs it — those two limits already describe what a connection may subscribe to, and
+a third number to keep in step with them would be a third number to get wrong. The bound
+is not decoration: this is untrusted input being copied into a request the gateway signs
+and POSTs once per connection, so an unbounded list is an amplification vector aimed at
+the component least able to absorb it during a reconnect storm (NFR-4). Truncation is
+silent, like the connect reply's own: a client compares what it got back against what it
+asked for.
+
+The field is **omitted** when the connect frame asked for nothing, rather than sent as
+`[]` or `null` — so its absence means "this client requested no channels", and never "this
+gateway does not send the field".
+
+One caveat if `app.cache_ttl` is on: the answer cache is keyed on the cookie and not on
+this field, so an answer computed for one requested list can be served to a later
+connection that asked for a different one. An application that narrows `channels` by
+`channels_requested` should leave the cache off, which is the default and is already the
+recommendation for revocation latency (`08-config.md` §3).
+
 The signature covers a **digest of the cookie** as well as the body:
 
 ```

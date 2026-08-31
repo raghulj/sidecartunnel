@@ -447,7 +447,7 @@ func (r *fakeRegistry) fanout(f *proto.Frame) {
 func okAuth(t *testing.T, user string, grants ...string) Authorizer {
 	t.Helper()
 	set := mustGrants(t, grants...)
-	return AuthorizerFunc(func(context.Context) (Authorization, error) {
+	return AuthorizerFunc(func(context.Context, []string) (Authorization, error) {
 		return Authorization{User: user, Grants: set, ExpiresIn: time.Hour}, nil
 	})
 }

@@ -1,11 +1,14 @@
 package conn
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/glob"
 	"github.com/raghulj/sidecartunnel/internal/proto"
@@ -428,4 +431,150 @@ func mustGrants(t *testing.T, patterns ...string) glob.Set {
 		t.Fatalf("glob.NewSet(%v): %v", patterns, err)
 	}
 	return set
+}
+
+// TestConnect_RequestedChannelsReachTheAuthorizer_FR3 — the connect frame's subs are
+// handed to the Authorizer, which is the only way they can reach the connect webhook's
+// channels_requested (docs/04-integration.md §1.1).
+//
+// The connection authorizes after the frame has been read, so the Authorizer is the seam
+// that carries them: a signature taking only a context leaves the value with nowhere to
+// go, and the normative request example then shows a field the gateway never sends.
+func TestConnect_RequestedChannelsReachTheAuthorizer_FR3(t *testing.T) {
+	seen := make(chan []string, 1)
+	r := newRig(t, func(o *Options) {
+		set := mustGrants(t, "room-*")
+		o.Authorizer = AuthorizerFunc(func(_ context.Context, requested []string) (Authorization, error) {
+			seen <- requested
+			return Authorization{User: "u", Grants: set, ExpiresIn: time.Hour}, nil
+		})
+	})
+
+	r.connect("room-1", "room-2")
+
+	select {
+	case got := <-seen:
+		if !slices.Equal(got, []string{"room-1", "room-2"}) {
+			t.Fatalf("requested = %v, want the channels the connect frame asked for", got)
+		}
+	case <-time.After(failAfter):
+		t.Fatal("the Authorizer was never called")
+	}
+}
+
+// TestConnect_RequestedChannelsAreBounded_FR3 — the list is untrusted client input on its
+// way into a webhook body, so it is bounded before it leaves the connection:
+// limits.max_subscriptions_per_conn entries, each at most limits.max_channel_length
+// bytes, deduplicated.
+//
+// Unbounded, one connect frame is an amplification vector into the application: the
+// gateway would sign and POST whatever a client typed, at the connection rate, to the
+// component least able to absorb it (NFR-4). Names that cannot become subscriptions
+// anyway — empty, or over the length cap — are dropped rather than forwarded, because
+// forwarding them costs the application bytes and tells it nothing.
+func TestConnect_RequestedChannelsAreBounded_FR3(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// max is limits.max_subscriptions_per_conn, maxLen limits.max_channel_length.
+		max    int
+		maxLen int
+
+		subs []string
+		want []string
+	}{
+		{
+			name: "forwarded in the order the client asked",
+			max:  500, maxLen: 255,
+			subs: []string{"room-2", "room-1"}, want: []string{"room-2", "room-1"},
+		},
+		{
+			name: "capped at limits.max_subscriptions_per_conn",
+			max:  2, maxLen: 255,
+			subs: []string{"room-1", "room-2", "room-3", "room-4"}, want: []string{"room-1", "room-2"},
+		},
+		{
+			name: "a name over limits.max_channel_length is dropped",
+			max:  500, maxLen: 6,
+			subs: []string{"room-1", "room-1000"}, want: []string{"room-1"},
+		},
+		{
+			name: "an empty name is dropped",
+			max:  500, maxLen: 255,
+			subs: []string{"", "room-1"}, want: []string{"room-1"},
+		},
+		{
+			name: "duplicates collapse, so a repeated name cannot inflate the body",
+			max:  500, maxLen: 255,
+			subs: []string{"room-1", "room-1", "room-1"}, want: []string{"room-1"},
+		},
+		{
+			name: "a connect that asked for nothing forwards nothing",
+			max:  500, maxLen: 255,
+			subs: nil, want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen := make(chan []string, 1)
+			r := newRig(t, func(o *Options) {
+				o.MaxSubscriptions = tt.max
+				o.MaxChannelLength = tt.maxLen
+				set := mustGrants(t, "room-*")
+				o.Authorizer = AuthorizerFunc(func(_ context.Context, requested []string) (Authorization, error) {
+					seen <- requested
+					return Authorization{User: "u", Grants: set, ExpiresIn: time.Hour}, nil
+				})
+			})
+
+			r.connect(tt.subs...)
+
+			select {
+			case got := <-seen:
+				if !slices.Equal(got, tt.want) {
+					t.Fatalf("requested = %v, want %v", got, tt.want)
+				}
+			case <-time.After(failAfter):
+				t.Fatal("the Authorizer was never called")
+			}
+		})
+	}
+}
+
+// TestConnect_RequestedChannelsConferNoGrant_FR5 is the invariant the whole gateway turns
+// on: the application decides, the gateway enforces. The requested list is a hint carried
+// to the application and nothing else — a channel that appears in it and not in the
+// grants the application answered with must be refused exactly as if it had never been
+// asked for.
+//
+// It fails the moment anything downstream reads the requested list as authority: a
+// connection that subscribes to what it asked for, or an Authorizer whose answer is
+// merged with the request rather than replacing it.
+func TestConnect_RequestedChannelsConferNoGrant_FR5(t *testing.T) {
+	r := newRig(t, func(o *Options) {
+		set := mustGrants(t, "room-*")
+		o.Authorizer = AuthorizerFunc(func(_ context.Context, requested []string) (Authorization, error) {
+			// The application ignored the request entirely, which is its right: the
+			// requested list is informational and the grants are the answer.
+			_ = requested
+			return Authorization{User: "u", Grants: set, ExpiresIn: time.Hour}, nil
+		})
+	})
+
+	reply := r.connect("room-1", "vault-1")
+
+	if _, ok := reply.Subs["vault-1"]; ok {
+		t.Fatalf("subs = %v: asking for a channel granted it (FR-5)", reply.Subs)
+	}
+	if _, ok := reply.Subs["room-1"]; !ok {
+		t.Fatalf("subs = %v, want the granted channel present", reply.Subs)
+	}
+	if r.conn.Allows("vault-1") {
+		t.Fatal("Allows(\"vault-1\") is true: the requested list widened the grant set (FR-5)")
+	}
+
+	// And it is still refused as a later command, so nothing further along the connection
+	// remembers the request either.
+	r.sock.feed(map[string]any{"id": 2, "subscribe": map[string]any{"channel": "vault-1"}})
+	r.wantError(proto.ErrPermissionDenied)
 }

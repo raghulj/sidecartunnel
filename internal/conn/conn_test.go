@@ -119,7 +119,7 @@ func TestHandshakeTimeout_StopsAtTheFrame_FR4(t *testing.T) {
 	release := make(chan struct{})
 	r := newRig(t, func(o *Options) {
 		o.HandshakeTimeout = 5 * time.Second
-		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
+		o.Authorizer = AuthorizerFunc(func(context.Context, []string) (Authorization, error) {
 			close(entered)
 			<-release
 			return Authorization{User: "u", Grants: mustGrants(t, "room-*"), ExpiresIn: time.Hour}, nil
@@ -160,7 +160,7 @@ func TestAuthorizationFailure_FR6(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newRig(t, func(o *Options) {
-				o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
+				o.Authorizer = AuthorizerFunc(func(context.Context, []string) (Authorization, error) {
 					return Authorization{}, tt.err
 				})
 			})
@@ -480,7 +480,7 @@ func TestNoGoroutineLeaks_NFR3(t *testing.T) {
 // re-handshakes with whatever cookie the browser currently holds.
 func TestExpiry_Closes3503_FR22(t *testing.T) {
 	r := newRig(t, func(o *Options) {
-		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
+		o.Authorizer = AuthorizerFunc(func(context.Context, []string) (Authorization, error) {
 			return Authorization{User: "u", Grants: mustGrants(t, "room-*"), ExpiresIn: time.Hour}, nil
 		})
 	})
@@ -654,7 +654,7 @@ func TestOffer_RefusesNilFrame(t *testing.T) {
 // expiry that fires immediately and closes the connection it just opened (FR-22).
 func TestConnect_NoExpiryArmsNoTimer(t *testing.T) {
 	r := newRig(t, func(o *Options) {
-		o.Authorizer = AuthorizerFunc(func(context.Context) (Authorization, error) {
+		o.Authorizer = AuthorizerFunc(func(context.Context, []string) (Authorization, error) {
 			return Authorization{User: "u", Grants: mustGrants(t, "room-*")}, nil
 		})
 	})

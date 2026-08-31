@@ -130,8 +130,12 @@ func (s *Server) serve(r *http.Request, sock *websocket.Conn) {
 		ID:       s.newID(),
 		Socket:   sock,
 		Registry: newRegistry(s.ctx, s.hub, s.rates, s.clock),
-		Authorizer: conn.AuthorizerFunc(func(ctx context.Context) (conn.Authorization, error) {
-			return s.authorize(ctx, c, req)
+		// requested is the connect frame's subs. It arrives as an argument rather than in
+		// the captured req because the frame has not been read when this closure is
+		// built: the cookie is a property of the upgrade, the requested channels are a
+		// property of a frame that comes later (docs/04-integration.md §1.1).
+		Authorizer: conn.AuthorizerFunc(func(ctx context.Context, requested []string) (conn.Authorization, error) {
+			return s.authorize(ctx, c, req, requested)
 		}),
 		Clock: s.clock,
 		Log:   s.log,
@@ -233,16 +237,25 @@ func (s *Server) admitUser(c *conn.Conn, user string) bool {
 	return true
 }
 
-// authorize turns one connection's cookie into the gateway's answer, by asking the
-// application and switching on the sealed Result type.
+// authorize turns one connection's cookie and its requested channels into the gateway's
+// answer, by asking the application and switching on the sealed Result type.
 //
 // FR-6 is the whole of it, and the two outcomes must never share a close code. A refusal
 // is a decision: the client stops, and retrying cannot change the answer. A failure is
 // the gateway saying it could not tell right now: every replica will answer the same, so
 // the client must come back later with a retry_after rather than hammering an application
 // that is already unwell.
-func (s *Server) authorize(ctx context.Context, c *conn.Conn, req webhook.Request) (conn.Authorization, error) {
+func (s *Server) authorize(ctx context.Context, c *conn.Conn, req webhook.Request, requested []string) (conn.Authorization, error) {
+	// req is a copy: the closure in serve holds its own, and writing here would otherwise
+	// carry one connection's requested channels into the next call on the same closure.
 	req.Client = c.ID()
+
+	// docs/04-integration.md §1.1: a hint, and only that. The application answers with
+	// the grants and everything downstream matches against those, so a channel named here
+	// confers nothing. It arrives bounded by the connection —
+	// limits.max_subscriptions_per_conn entries of at most limits.max_channel_length
+	// bytes — because it is untrusted client input entering an outbound request (NFR-4).
+	req.ChannelsRequested = requested
 
 	switch res := s.webhook.Call(ctx, req).(type) {
 	case webhook.Authorized:
