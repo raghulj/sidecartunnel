@@ -13,8 +13,8 @@ REDIS_IMAGE ?= redis:8-alpine
 .DEFAULT_GOAL := check
 .PHONY: check test cover lint build redis redis-stop integration clean tidy
 
-## check: trace lint, test and the coverage gate. What CI runs, and what to run before pushing.
-check: lint test cover
+## check: lint, test, the coverage gate and requirements traceability. What CI runs.
+check: lint test cover trace
 
 ## test: unit and protocol tests with the race detector.
 #
