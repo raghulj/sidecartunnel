@@ -10,6 +10,21 @@
 
 version: 2
 
+# The registry and repository the images are published to. Override it to release the
+# same code somewhere else without editing this file:
+#
+#     IMAGE_REPO=registry.example.com/team/sidecartunnel goreleaser release
+#
+# The release workflow passes it through, so a fork changes one repository variable in
+# GitHub settings rather than patching six image_templates and getting one of them wrong.
+env:
+  # `index .Env` rather than envOrDefault: envOrDefault treats set-but-empty as set,
+  # and an unset GitHub Actions `vars.X` arrives as the empty string, not as absent.
+  # With envOrDefault that produced an image named ":v0.1.0-amd64" - no repository at
+  # all - which builds locally and fails at push. Caught before it shipped by testing
+  # the empty case rather than only unset and set.
+  - IMAGE_REPO={{ $r := index .Env "IMAGE_REPO" }}{{ if $r }}{{ $r }}{{ else }}ghcr.io/raghulj/sidecartunnel{{ end }}
+
 project_name: sidecartunnel
 
 # NFR-6 targets a release image under 20 MB and the binary is nearly all of it, so the
@@ -100,9 +115,9 @@ dockers:
     dockerfile: Dockerfile
     use: buildx
     image_templates:
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Tag }}-amd64"
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Major }}.{{ .Minor }}-amd64"
-      - "ghcr.io/raghulj/sidecartunnel:latest-amd64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-amd64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-amd64"
+      - "{{ .Env.IMAGE_REPO }}:latest-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=VERSION={{ .Version }}"
@@ -135,9 +150,9 @@ dockers:
     dockerfile: Dockerfile
     use: buildx
     image_templates:
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Tag }}-arm64"
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Major }}.{{ .Minor }}-arm64"
-      - "ghcr.io/raghulj/sidecartunnel:latest-arm64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-arm64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-arm64"
+      - "{{ .Env.IMAGE_REPO }}:latest-arm64"
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=VERSION={{ .Version }}"
@@ -163,20 +178,20 @@ dockers:
 docker_manifests:
   # What anyone actually pulls. The per-architecture tags above exist only to be joined
   # here.
-  - name_template: "ghcr.io/raghulj/sidecartunnel:{{ .Tag }}"
+  - name_template: "{{ .Env.IMAGE_REPO }}:{{ .Tag }}"
     image_templates:
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Tag }}-amd64"
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Tag }}-arm64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-amd64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-arm64"
 
-  - name_template: "ghcr.io/raghulj/sidecartunnel:{{ .Major }}.{{ .Minor }}"
+  - name_template: "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}"
     image_templates:
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Major }}.{{ .Minor }}-amd64"
-      - "ghcr.io/raghulj/sidecartunnel:{{ .Major }}.{{ .Minor }}-arm64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-amd64"
+      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-arm64"
 
-  - name_template: "ghcr.io/raghulj/sidecartunnel:latest"
+  - name_template: "{{ .Env.IMAGE_REPO }}:latest"
     image_templates:
-      - "ghcr.io/raghulj/sidecartunnel:latest-amd64"
-      - "ghcr.io/raghulj/sidecartunnel:latest-arm64"
+      - "{{ .Env.IMAGE_REPO }}:latest-amd64"
+      - "{{ .Env.IMAGE_REPO }}:latest-arm64"
 
 changelog:
   sort: asc

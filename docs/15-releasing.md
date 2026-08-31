@@ -228,3 +228,27 @@ reaches someone who has already downloaded it.
 A yank is disruptive to everyone who pinned correctly, which is exactly the population that
 did the right thing. Reserve it for cases where continuing to run the version is worse than
 the interruption.
+
+
+## Publishing Somewhere Other Than ghcr.io/raghulj
+
+The image repository is the `IMAGE_REPO` variable, defaulting to
+`ghcr.io/raghulj/sidecartunnel`. Nothing else in the release is hardcoded to a registry.
+
+```sh
+IMAGE_REPO=registry.example.com/team/sidecartunnel goreleaser release --clean
+```
+
+In Actions, set it once under **Settings → Secrets and variables → Actions → Variables**;
+`release.yml` passes it through. A fork therefore changes one repository variable rather
+than six `image_templates`, where getting five right and one wrong publishes a release
+that is half in the wrong place.
+
+The template uses `index .Env` rather than `envOrDefault`, because an unset Actions
+variable arrives as the **empty string** and `envOrDefault` treats set-but-empty as set.
+That produced an image named `:v0.1.0-amd64` — no repository at all — which builds
+locally and fails at push. Test the empty case, not only unset and set.
+
+Everything at runtime is already an environment variable, including the websocket path
+(`ST_SERVER__PATH`), the authorization endpoint (`ST_APP__CONNECT_URL`) and the bus
+(`ST_BUS__URL`). See `08-config.md`.

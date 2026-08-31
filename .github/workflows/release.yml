@@ -106,3 +106,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Defaults to ghcr.io/<owner>/<repo> when the variable is unset, so a fork
+          # publishes to its own registry by setting one repository variable rather
+          # than editing .goreleaser.yaml (Settings -> Secrets and variables -> Actions).
+          IMAGE_REPO: ${{ vars.IMAGE_REPO }}
