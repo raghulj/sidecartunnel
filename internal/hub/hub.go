@@ -171,6 +171,18 @@ type Hub struct {
 	// contention point on every connect and disconnect (docs/09-internals.md §9).
 	users map[string]map[Sink]struct{}
 
+	// userOf records which users bucket each connection is filed under.
+	//
+	// It exists because a connection is registered before the application has answered —
+	// internal/server calls Add at the upgrade so a control disconnect can reach it from
+	// the moment it exists (FR-18) — and Sink.User is empty until Attach. Filing it once
+	// at Add and never again leaves it under "" for its whole life, which breaks
+	// revocation in the quietest possible way: a control disconnect naming the real user
+	// reaches nothing and reports success. Remove has the same problem in reverse, and
+	// deletes under a key the connection was never filed under, leaking one map entry and
+	// one dead Sink per connection.
+	userOf map[Sink]string
+
 	// clients indexes connections by client id, for the other control target.
 	clients map[string]Sink
 
@@ -255,6 +267,7 @@ func New(ctx context.Context, b bus.Bus, opts Options) *Hub {
 		channels:   make(map[string]map[Sink]struct{}),
 		subs:       make(map[Sink]map[string]struct{}),
 		users:      make(map[string]map[Sink]struct{}),
+		userOf:     make(map[Sink]string),
 		clients:    make(map[string]Sink),
 		desired:    map[string]struct{}{opts.Prefix + controlChannel: {}},
 		wake:       make(chan struct{}, 1),
@@ -335,19 +348,49 @@ func (h *Hub) Add(s Sink) error {
 func (h *Hub) registerLocked(s Sink) error {
 	if existing, ok := h.clients[s.ID()]; ok {
 		if existing == s {
+			// Re-registration is the connect path: Add ran at the upgrade, when the user
+			// id was still empty, and Attach runs once the application has answered. The
+			// index has to follow, or revocation by user reaches nothing (FR-18).
+			h.indexUserLocked(s)
 			return nil
 		}
 		return fmt.Errorf("hub: add %s: %w", s.ID(), ErrDuplicateID)
 	}
 	h.subs[s] = make(map[string]struct{})
 	h.clients[s.ID()] = s
-	set, ok := h.users[s.User()]
+	h.indexUserLocked(s)
+	return nil
+}
+
+// indexUserLocked files s under its current user id, moving it out of whatever bucket it
+// was in. The caller holds the write lock.
+func (h *Hub) indexUserLocked(s Sink) {
+	user := s.User()
+	if filed, ok := h.userOf[s]; ok {
+		if filed == user {
+			return
+		}
+		h.dropFromUserLocked(s, filed)
+	}
+	set, ok := h.users[user]
 	if !ok {
 		set = make(map[Sink]struct{})
-		h.users[s.User()] = set
+		h.users[user] = set
 	}
 	set[s] = struct{}{}
-	return nil
+	h.userOf[s] = user
+}
+
+// dropFromUserLocked removes s from the named bucket, which is the one it is actually
+// filed under and not necessarily the one s.User names today. The caller holds the write
+// lock and has already established that s is filed.
+func (h *Hub) dropFromUserLocked(s Sink, user string) {
+	set := h.users[user]
+	delete(set, s)
+	if len(set) == 0 {
+		delete(h.users, user)
+	}
+	delete(h.userOf, s)
 }
 
 // Attach registers a connection and takes its connect-frame subscriptions in one critical
@@ -433,11 +476,8 @@ func (h *Hub) Remove(s Sink) {
 	}
 	delete(h.subs, s)
 	delete(h.clients, s.ID())
-	if set, found := h.users[s.User()]; found {
-		delete(set, s)
-		if len(set) == 0 {
-			delete(h.users, s.User())
-		}
+	if filed, found := h.userOf[s]; found {
+		h.dropFromUserLocked(s, filed)
 	}
 	h.mu.Unlock()
 

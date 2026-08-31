@@ -16,6 +16,13 @@
 // (docs/04-integration.md §4, docs/08-config.md §1).
 package main
 
+import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+)
+
 // Build information, injected at link time with -X (see .goreleaser.yaml and Dockerfile).
 //
 // These must exist as package-level vars even though nothing sets them in a plain `go
@@ -28,13 +35,17 @@ var (
 	date    = "unknown"
 )
 
-func main() {
-	// coverage: referenced so the linker keeps the symbols and -X has something to write
-	// to. Replaced by real flag handling when the wiring lands.
-	_, _, _ = version, commit, date
+// signalBuffer is the depth of the signal channel. It is two because a second SIGTERM
+// abandons the drain, and an unbuffered channel drops a signal that arrives while the
+// drain is being set up — which is the one signal the operator sending it most means.
+const signalBuffer = 2
 
-	// coverage: contract stub. Wiring lands with the first milestone; there is nothing
-	// here to test yet, and a test that asserted a panic would have to be deleted the day
-	// it is implemented.
-	panic("not implemented")
+func main() {
+	// coverage: main is the process boundary and nothing else. It installs the real
+	// signal handler and turns run's exit code into a process status; every decision
+	// lives in run, which is called directly by the tests
+	// (docs/14-coding-standards.md §3).
+	signals := make(chan os.Signal, signalBuffer)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, signals))
 }

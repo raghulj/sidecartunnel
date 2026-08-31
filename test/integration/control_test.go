@@ -90,16 +90,21 @@ func TestControlDisconnectReachesAnotherReplica(t *testing.T) {
 // Un-skip this the moment the hub learns to re-file a connection when its user id is
 // set.
 func TestControlDisconnectByUserSpansReplicas(t *testing.T) {
-	// Was skipped as a known defect: the hub indexed a connection under user "" at
-	// hub.Add time (the upgrade, before the application has named anyone) and was
-	// thought never to re-file it, which would make every user-targeted control message
-	// match nothing on every replica - FR-18's primary form, silently dead.
+	// This was a REAL defect and this test is the regression for it.
 	//
-	// It re-files. registerLocked's re-registration branch calls indexUserLocked when
-	// Attach runs after the connect webhook answers, and conn stores the user id before
-	// calling Attach. The diagnosis was made against a tree that changed underneath it.
-	// The test stays, un-skipped, because nothing else covers the re-filing and the
-	// failure mode is invisible: revocation returns success and does nothing.
+	// internal/server calls hub.Add at the upgrade - deliberately, so a control disconnect
+	// can reach a connection before it subscribes - and at that moment Sink.User() is still
+	// "". registerLocked early-returned for an already-registered sink, so Attach never
+	// re-filed it once the application named the user, and the connection stayed in
+	// users[""] for life. Every control disconnect, refresh and unsubscribe naming a USER
+	// therefore matched nothing on every replica and REPORTED SUCCESS, which is the worst
+	// way for a revocation to fail. Remove compounded it by deleting under the current user
+	// id, leaking one dead sink per connection for the process lifetime.
+	//
+	// Found twice independently: by this suite, and by running the binary and watching
+	// POST /disconnect {"user":"u-7"} answer {"disconnected":0} against a connected u-7.
+	// Fixed by tracking the bucket a sink is actually filed under (hub.userOf) and
+	// re-indexing on re-registration.
 
 	t.Parallel()
 	c := newCluster(t, clusterOptions{})
