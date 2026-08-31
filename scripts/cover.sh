@@ -22,10 +22,24 @@ set -eu
 
 PROFILE="${1:-coverage.out}"
 PKGDIRS="$(mktemp -t stcover)"
-trap 'rm -f "${PKGDIRS}"' EXIT
+TESTLOG="$(mktemp -t sttest)"
+trap 'rm -f "${PKGDIRS}" "${TESTLOG}"' EXIT
 
 go list -f '{{.ImportPath}} {{.Dir}}' ./... > "${PKGDIRS}"
-go test -race -covermode=atomic -coverpkg=./... -coverprofile="${PROFILE}" ./... > /dev/null
+
+# The test output is captured rather than discarded, and replayed when the run fails.
+# It was `> /dev/null` once, and combined with `set -e` that meant a failing test exited
+# 1 with no output whatsoever: a red CI job with nothing in it to read. Coverage numbers
+# are worthless if a test failed, so a failure prints the failures and stops before the
+# gate reports a percentage that nobody should trust.
+if ! go test -race -covermode=atomic -coverpkg=./... -coverprofile="${PROFILE}" ./... \
+	> "${TESTLOG}" 2>&1; then
+	echo "FAIL: the test run did not pass; coverage was not evaluated." >&2
+	echo >&2
+	grep -E '^(---|===|FAIL|ok .*FAIL|panic|[[:space:]]+[a-z_/.]+\.go:[0-9]+:)' "${TESTLOG}" >&2 \
+		|| cat "${TESTLOG}" >&2
+	exit 1
+fi
 
 awk -v module="$(go list -m)" '
 	# First file: import path -> source directory.
