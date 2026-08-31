@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -873,5 +875,46 @@ func TestRedisDefaults(t *testing.T) {
 	}
 	if b.clock == nil {
 		t.Error("clock = nil, want time.Now")
+	}
+}
+
+// TestHealth_SubscriptionsResetOnDisconnect proves the upstream subscription gauge reads
+// zero while the connection is gone.
+//
+// It used to keep reporting the pre-outage count until a new connection was adopted, so
+// st_bus_subscriptions_current looked healthy during exactly the incident an operator
+// watches it in. It also broke callers: an integration test that waited on the count
+// alone was satisfied by the stale value and published into a gateway that had not
+// resubscribed, which presented as a flake rather than as this bug.
+//
+// Fails if release() stops zeroing the counter: Subscriptions would still be the
+// pre-outage figure with Connected already false.
+func TestHealth_SubscriptionsResetOnDisconnect(t *testing.T) {
+	t.Parallel()
+
+	srv := miniredis.RunT(t)
+	b := mustRedis(t, RedisOptions{URL: "redis://" + srv.Addr() + "/0"})
+
+	if err := b.Sync(context.Background(), []string{"a", "b", "c"}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if h := b.Health(); h.Subscriptions != 3 || !h.Connected {
+		t.Fatalf("before the outage: Subscriptions = %d, Connected = %v; want 3, true",
+			h.Subscriptions, h.Connected)
+	}
+
+	srv.Close() // the transport goes away underneath us
+
+	deadline := time.Now().Add(5 * time.Second)
+	for b.Health().Connected {
+		if time.Now().After(deadline) {
+			t.Fatal("the bus never noticed the connection was gone")
+		}
+		runtime.Gosched()
+	}
+
+	if h := b.Health(); h.Subscriptions != 0 {
+		t.Errorf("while disconnected: Subscriptions = %d, want 0 — nothing is subscribed "+
+			"upstream once the connection is gone", h.Subscriptions)
 	}
 }

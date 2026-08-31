@@ -485,6 +485,12 @@ func (b *RedisBus) release(sub subscriber) {
 
 	if b.connected.CompareAndSwap(true, false) {
 		b.downSince.Store(b.clock().UnixNano())
+		// Nothing is subscribed upstream once the connection is gone, so the gauge must
+		// say zero. It used to keep reporting the pre-outage count until a new connection
+		// was adopted, which made st_bus_subscriptions_current read healthy during
+		// exactly the incident it is watched in - and made any test that waited on the
+		// count alone proceed against a gateway that had not resubscribed yet.
+		b.subs.Store(0)
 	}
 	_ = sub.Close()
 }

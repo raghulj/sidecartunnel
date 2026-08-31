@@ -150,6 +150,11 @@ Written down now so they are recognisable later.
 - **The single hub lock.** Right for 20,000 connections by the arithmetic in
   `09-internals.md` §3. NFR-9 gates sharding behind a profile precisely because I expect to
   be tempted to build it before the profile says so.
+- **The bus consumer lives in `package main` and is not importable.** The loop joining
+  `bus.Receive()` to `hub.Dispatch`, the control routing, and the FR-23 signature
+  verification are all in `cmd/sidecartunnel`, so the integration suite had to write its
+  own equivalent. Two implementations of the same rule will drift, and the copy under test
+  is not the copy that ships. This should move into a package under `internal/`.
 - **`webhook.Request.ChannelsRequested` is always empty.** The connect frame's `subs` list
   cannot reach the connect webhook, because the authorizer is called before the frame is
   parsed. An application that wanted to scope grants to what was actually asked for

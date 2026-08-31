@@ -73,16 +73,23 @@ the message rate, or the clients are genuinely bad.
 
 ## 5. Ordering
 
-Within one channel, messages published to one Redis connection arrive at each replica in
-publish order, and each replica writes to a socket in receipt order. So per-channel order
-is preserved in practice.
+**There is no ordering guarantee, not even within one channel.** Do not rely on one.
 
-It is not *guaranteed*, and applications should not rely on it. Two publishes from two
-processes have no defined order between them, and nothing here provides a sequence number
-to detect a reorder. Where order matters, put an id or a version in the payload and let
-the client sort — the same field it needs for `?since=` reconciliation anyway.
+An earlier version of this section said per-channel order "is preserved in practice" while
+declining to guarantee it. That was measured and it is false: with `bus.dispatch_workers`
+at its default of 2, two messages published to one channel are fanned out by different
+workers concurrently and reach a socket in either order. At burst rate the integration
+suite saw the last message before a marker arrive *after* it in roughly two runs in three.
 
-Across channels there is no ordering at all.
+Saying "not guaranteed but true in practice" is the worst of both worlds. Nobody writes the
+reconciliation code, and the reordering shows up later as a bug that reproduces once a week.
+
+Where order matters, put an id or a version in the payload and let the client sort. That is
+the same field `?since=` reconciliation already needs (§2), so it costs nothing extra.
+Setting `dispatch_workers: 1` makes reordering unlikely rather than impossible, and gives
+up the M8 protection the workers exist to provide — it is not a fix.
+
+Across channels there is no ordering at all, and never was.
 
 ## 6. Duplicates
 

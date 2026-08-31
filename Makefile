@@ -7,11 +7,11 @@ BINARY      := sidecartunnel
 PKG         := ./cmd/sidecartunnel
 COVERAGE    := coverage.out
 REDIS_NAME  := sidecartunnel-redis
-REDIS_PORT  ?= 6379
-REDIS_IMAGE ?= redis:7-alpine
+REDIS_PORT  ?= 6380
+REDIS_IMAGE ?= redis:8-alpine
 
 .DEFAULT_GOAL := check
-.PHONY: check test cover lint build redis redis-stop clean tidy
+.PHONY: check test cover lint build redis redis-stop integration clean tidy
 
 ## check: lint, test and the coverage gate. What CI runs, and what to run before pushing.
 check: lint test cover
@@ -53,6 +53,20 @@ redis:
 	docker run --rm -d --name $(REDIS_NAME) -p $(REDIS_PORT):6379 $(REDIS_IMAGE) \
 		redis-server --client-output-buffer-limit "pubsub 256mb 64mb 60"
 	@echo "redis on :$(REDIS_PORT) — ST_BUS__URL=redis://localhost:$(REDIS_PORT)/0"
+
+## integration: the integration and failure layers against a real Redis.
+#
+# Starts Redis, runs test/integration with the race detector, and tears it down whatever
+# the result — a leftover container on a fixed port makes the next run fail on a port
+# clash rather than on the thing that actually broke (docs/11-testing.md §4, §5).
+#
+# The suite skips itself with a clear message when Redis is unreachable, so `go test
+# ./...` still passes on a laptop with no Docker. This target is for when you want the
+# opposite: a run that actually exercises the Redis path.
+integration: redis
+	@ST_TEST_REDIS_URL=redis://127.0.0.1:$(REDIS_PORT)/0 \
+		go test -race -count=1 -timeout 20m ./test/integration/... ; \
+		status=$$? ; $(MAKE) redis-stop >/dev/null 2>&1 ; exit $$status
 
 ## redis-stop: remove the throwaway Redis.
 redis-stop:
