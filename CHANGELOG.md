@@ -19,6 +19,17 @@ for a worked end-to-end run against a real application.
   keyless, against the release workflow's OIDC identity rather than a stored key. Images
   are signed by digest, not by tag, because `:latest` and `:X.Y` both move. Verification
   commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4.
+- `SECURITY.md` — private disclosure through GitHub advisories, plus what is in scope and
+  what is not. The gateway enforcing an application's decision incorrectly is in scope; the
+  application making a bad decision is not.
+- Issue templates for bugs and features, and a pull request template carrying the gates
+  from `docs/14-coding-standards.md`.
+
+### Changed
+
+- The compose example in the README and `docs/10-operations.md` §1 pointed at
+  `ghcr.io/…/sidecartunnel:1.0.0` — an ellipsis and a version that does not exist. It now
+  names the image that is actually published.
 
 ### Fixed
 

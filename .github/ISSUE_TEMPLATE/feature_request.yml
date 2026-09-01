@@ -1,0 +1,41 @@
+name: Feature request
+description: Something the gateway should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth reading first: [`docs/00-overview.md`](../../docs/00-overview.md) has the
+        non-goals and [`docs/12-roadmap.md`](../../docs/12-roadmap.md) has what is already
+        planned.
+
+        Two things that will not be built, so neither of us spends time on them:
+
+        - **Anything that makes the gateway decide authorization rather than enforce it.**
+          Every authorization answer originates in the application and arrives as an HTTP
+          response. A feature that derives a decision here is a feature that can disagree
+          with the application, and that disagreement is the bug.
+        - **Anything naming a domain concept from a consuming application** — tenants,
+          orgs, accounts, workspaces. Channels are opaque strings and stay that way.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you are trying to do and where it breaks down. Describe the situation rather
+        than the feature — the fix is often something other than the one you had in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you are doing instead
+      description: Whatever you do today to work around it, however ugly.
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. If it touches the wire protocol, say so.

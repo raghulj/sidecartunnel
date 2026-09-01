@@ -1,5 +1,14 @@
 # sidecartunnel
 
+[![ci](https://github.com/raghulj/sidecartunnel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/raghulj/sidecartunnel/actions/workflows/ci.yml)
+[![codeql](https://github.com/raghulj/sidecartunnel/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/raghulj/sidecartunnel/actions/workflows/codeql.yml)
+[![coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](docs/14-coding-standards.md)
+[![go report](https://goreportcard.com/badge/github.com/raghulj/sidecartunnel)](https://goreportcard.com/report/github.com/raghulj/sidecartunnel)
+[![release](https://img.shields.io/github/v/release/raghulj/sidecartunnel?sort=semver&color=blue)](https://github.com/raghulj/sidecartunnel/releases/latest)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-multi--arch-blue?logo=docker&logoColor=white)](https://github.com/raghulj/sidecartunnel/pkgs/container/sidecartunnel)
+[![go](https://img.shields.io/github/go-mod/go-version/raghulj/sidecartunnel)](go.mod)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A Go websocket gateway for applications that cannot hold long-lived connections — Flask, Django, Rails, PHP-FPM. Terminates websockets, authorizes each connection against the application's own session cookie, and fans messages out across replicas through Redis pub/sub.
 
 The application publishes with one `redis.publish()` call and authorizes with one HTTP endpoint. It does not import a websocket library, run an event loop, or change how it is deployed.
@@ -104,6 +113,35 @@ Everything is configurable by environment except `namespaces`, which needs the Y
 
 Full reference with every key and validation rule: [`docs/08-config.md`](docs/08-config.md).
 
+## Container Images
+
+Published to GHCR on every tag, as a multi-arch manifest covering `linux/amd64` and
+`linux/arm64`. The base is `gcr.io/distroless/static-debian12:nonroot` — no shell, no
+package manager, non-root by default.
+
+```
+docker pull ghcr.io/raghulj/sidecartunnel:v0.1.0
+```
+
+| Tag | Moves | Use it for |
+|---|---|---|
+| `v0.1.0` | Never | Production. Pin this. |
+| `0.1` | Patch releases within the minor | Picking up fixes without a redeploy decision |
+| `latest` | Every release | Local development only |
+
+Images and `checksums.txt` are signed with [cosign](https://docs.sigstore.dev) keyless, so
+there is no public key to distribute — the identity being attested is the release workflow
+itself.
+
+```
+cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.0 \
+  --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Each release also carries an SBOM per archive and a signed `checksums.txt`. The full
+verification procedure is in [`docs/15-releasing.md`](docs/15-releasing.md).
+
 ## Deployment
 
 Route by path so the socket is same-origin and the cookie flows without frontend changes.
@@ -163,7 +201,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
 ```yaml
 services:
   sidecartunnel:
-    image: ghcr.io/…/sidecartunnel:1.0.0
+    image: ghcr.io/raghulj/sidecartunnel:v0.1.0
     healthcheck:
       test: ["CMD", "/sidecartunnel", "healthcheck"]
       interval: 10s

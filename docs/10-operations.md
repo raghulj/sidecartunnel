@@ -74,7 +74,7 @@ accident.
 ```yaml
 services:
   sidecartunnel:
-    image: ghcr.io/…/sidecartunnel:1.0.0
+    image: ghcr.io/raghulj/sidecartunnel:v0.1.0
     environment:
       ST_SERVER__ALLOWED_ORIGINS: "https://app.example.com"
       ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"

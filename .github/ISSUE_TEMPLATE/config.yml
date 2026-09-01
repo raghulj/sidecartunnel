@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/raghulj/sidecartunnel/security/advisories/new
+    about: Report privately. Do not open a public issue for anything exploitable.
+  - name: Integrating it into an application
+    url: https://github.com/raghulj/sidecartunnel/blob/main/docs/16-integration-guide.md
+    about: The integration guide walks a working Flask stack end to end.
+  - name: Configuration reference
+    url: https://github.com/raghulj/sidecartunnel/blob/main/docs/08-config.md
+    about: Every key, its default, and the rule that validates it.

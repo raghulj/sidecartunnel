@@ -1,0 +1,66 @@
+name: Bug report
+description: Something behaves differently from what the docs say it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security issue, do not file it here — use
+        [private vulnerability reporting](https://github.com/raghulj/sidecartunnel/security/advisories/new)
+        instead. See [SECURITY.md](../../SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `sidecartunnel version`, or the image tag and digest.
+      placeholder: v0.1.0 / ghcr.io/raghulj/sidecartunnel@sha256:...
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        What you ran, what you expected, what you got. Exact error text and close codes
+        beat a paraphrase — error 103 and close 4003 mean different things and the
+        difference is usually the answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >-
+        The smallest thing that shows it. `examples/flask/` is a working two-replica stack
+        if you need somewhere to start from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: >-
+        The relevant config keys or `ST_` environment variables. Redact secrets — never
+        paste a cookie, an `Authorization` header, or a webhook signing key.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Gateway logs around the failure. The gateway does not log cookies or webhook
+        bodies, but check anything you paste from your own application.
+      render: text
+
+  - type: textarea
+    id: ruled-out
+    attributes:
+      label: What you have ruled out
+      description: >-
+        Optional, and genuinely useful. "I have not checked whether the proxy idle timeout
+        matters" saves a round trip.
