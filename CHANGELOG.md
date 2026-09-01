@@ -13,6 +13,18 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A prerelease tag repointed `:latest` and `:X.Y` at the release candidate.** The moving
+  image tags were listed unconditionally in both architecture blocks and in
+  `docker_manifests`, so `release.prerelease: auto` kept an `-rc` out of the "latest
+  release" slot on GitHub while the registry tags production pulls moved to it anyway.
+  They are now guarded on `{{ if not .Prerelease }}`. Verified both ways with a local
+  GoReleaser run: `v0.1.2-rc.1` builds only `:v0.1.2-rc.1-{amd64,arm64}`, and `v0.1.2`
+  still builds all six per-architecture tags. `docs/15-releasing.md` §3 gains the
+  release-candidate rehearsal this makes safe — the thing that was missing when `v0.1.1`
+  had to be cut with four never-executed steps in the release job.
+
 ### Added
 
 - Every GitHub Actions dependency moved to its current major, still SHA-pinned, which also
