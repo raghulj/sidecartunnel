@@ -192,6 +192,17 @@ certificate from Fulcio and logs the signature in Rekor. There is no public key 
 and no private key to rotate, which is the reason for choosing it — a signing key I have to
 remember to rotate is a signing key that expires quietly and takes the guarantee with it.
 
+The **cosign binary is pinned to v2.5.2** in `release.yml`, deliberately, and not to
+whatever `cosign-installer` defaults to. Cosign 3 removed `--output-certificate` and
+`--output-signature` from `sign-blob`, which the `signs` block in `.goreleaser.yaml`
+passes, and changed `sign` to store container signatures as OCI 1.1 referring artifacts
+rather than a `.sig` tag. Taking that upgrade means rewriting the `signs` block around
+`--bundle`, deciding what the release publishes instead of `checksums.txt.sig` and
+`checksums.txt.pem`, and rewriting the verification commands here, in `README.md` and in
+the GoReleaser footer. It is a migration, not a version bump, and a Dependabot pull request
+that bumps `cosign-installer` across a major must not quietly take it — the pin is what
+stops that.
+
 The image is signed by digest rather than by tag, because `:latest` and `:X.Y` both move:
 
 ```sh

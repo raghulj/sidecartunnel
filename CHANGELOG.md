@@ -15,6 +15,17 @@ for a worked end-to-end run against a real application.
 
 ### Added
 
+- Every GitHub Actions dependency moved to its current major, still SHA-pinned, which also
+  clears the Node 20 runtime deprecation the `v0.1.1` release run warned about.
+- The cosign **binary** is pinned to `v2.5.2` in `release.yml`, separately from the action
+  that installs it. `cosign-installer` v4 installs cosign 3, which removed
+  `--output-certificate` and `--output-signature` from `sign-blob` — both passed by the
+  `signs` block in `.goreleaser.yaml` — and changed `sign` to store container signatures as
+  OCI 1.1 referring artifacts rather than a `.sig` tag. Taken silently, the next tag would
+  have failed at the signing step or stopped producing the `checksums.txt.sig` and
+  `checksums.txt.pem` that `README.md` tells people to verify. `docs/15-releasing.md` §4
+  records what migrating actually involves.
+
 - **`make image` and `make image-check`.** One documented way to build the image outside a
   release, and a gate that asserts it carries what a released image carries — the nine OCI
   labels, the version metadata, `8000/tcp` and nothing else exposed, `nonroot:nonroot`, and
