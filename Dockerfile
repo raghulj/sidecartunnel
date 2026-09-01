@@ -8,7 +8,7 @@
 # --platform=$BUILDPLATFORM keeps the compiler running natively and cross-compiles with
 # GOOS/GOARCH, rather than emulating the target under QEMU — the difference between a
 # multi-arch release taking one minute and taking twenty.
-FROM --platform=${BUILDPLATFORM} golang:1.26-alpine AS build
+FROM --platform=${BUILDPLATFORM} golang:1.27-alpine AS build
 
 WORKDIR /src
 

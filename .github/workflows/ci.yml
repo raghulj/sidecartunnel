@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
 
       - name: golangci-lint
@@ -58,7 +58,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26"]
+        # Both ends of the supported range. 1.26 is the `go` directive in go.mod, the
+        # minimum a consumer of this module needs, and it is worth testing rather than
+        # asserting. 1.27 is what the release is actually compiled with, in the Dockerfile
+        # and on the runner. Shipping one and testing the other is how a toolchain
+        # regression reaches a release.
+        go: ["1.26", "1.27"]
 
     services:
       redis:
@@ -124,7 +129,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
 
       - name: Build

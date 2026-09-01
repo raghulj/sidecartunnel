@@ -98,10 +98,27 @@ awk -v module="$(go list -m)" '
 			close(path)
 		}
 
-		from = start - 3; if (from < 1) from = 1
+		# A justification sits either inside the block or in the comment
+		# immediately above its first statement.
 		exempt = 0
-		for (i = from; i <= end; i++) {
+		for (i = start; i <= end; i++) {
 			if (index(src[path, i], "// coverage:") > 0) { exempt = 1; break }
+		}
+
+		# Walk back over the contiguous comment above the block, however many
+		# lines it runs to. This was a fixed three-line window, which silently
+		# stopped honouring any justification longer than three lines -- and a
+		# justification is prose, so several here are four. It survived only
+		# because Go 1.26 reports a block as starting early enough that the
+		# window still reached the marker; under 1.27 the reported start moves
+		# down and ten justified exemptions were reported as unjustified. A gate
+		# whose correctness depends on where a toolchain thinks a block begins is
+		# not a gate, so the window is gone.
+		for (i = start - 1; !exempt && i >= 1; i--) {
+			cline = src[path, i]
+			sub(/^[ \t]+/, "", cline)
+			if (substr(cline, 1, 2) != "//") break
+			if (index(cline, "// coverage:") > 0) exempt = 1
 		}
 		if (exempt) { ok[pkg] += stmts; next }
 

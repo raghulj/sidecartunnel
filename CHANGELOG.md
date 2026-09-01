@@ -45,6 +45,20 @@ for a worked end-to-end run against a real application.
 
 ### Fixed
 
+- **The coverage gate honoured only the first three lines above a block.**
+  `scripts/cover.sh` looked for a `// coverage:` justification in a fixed `start - 3`
+  window, so any justification longer than three lines was found only by accident — and a
+  justification is prose, so several here run to four. It worked under Go 1.26 because 1.26
+  reports a block as starting at the function's opening brace, which puts the whole comment
+  inside the block's own span. Go 1.27 reports the block starting at the first statement
+  instead, the window stopped reaching the marker, and ten justified exemptions were
+  reported as unjustified. The scan now walks the contiguous comment above the block
+  however far it runs. Reproduced by feeding the gate a profile carrying 1.27's block
+  boundaries: the old gate prints `main.go:48 (3 stmt)` and fails, the new one passes, and
+  an unmodified 1.26 profile is unaffected under both.
+- **Go 1.27 could not be linted.** golangci-lint v2.12.2 links `go/types` from Go 1.25 and
+  panics on 1.27 source rather than reporting anything. Moved to v2.13.2.
+
 - **Only the release workflow produced a complete image.** All nine OCI labels were
   `--label` flags in `.goreleaser.yaml`, duplicated across the amd64 and arm64 blocks, so
   the published image carried them and a `docker build .` — the command the compose example
@@ -61,6 +75,17 @@ for a worked end-to-end run against a real application.
   and omitted every label the real one sets. It is a pointer to the actual file now.
 
 ### Changed
+
+- **The Go toolchain moved to 1.27 everywhere it is named** — the Dockerfile's build stage
+  and every `setup-go` step — so the archive binaries and the image binary in one release
+  come from the same compiler. Two toolchains build a release: the archives through
+  GoReleaser on the runner, the image binary inside the Dockerfile. Bumping only the
+  Dockerfile, which is what Dependabot proposed, would have shipped a release split across
+  1.26 and 1.27, and compiled the artifact production runs with a Go version that failed
+  this repository's own lint and coverage gates. The test matrix now covers 1.26 and 1.27:
+  `go.mod` still declares `go 1.26` as the minimum a consumer needs, which is a claim worth
+  testing, and 1.27 is what ships. `go.mod` itself is unchanged — building with a newer
+  toolchain than the directive does not raise the requirement on anyone downstream.
 
 - The compose examples and the deployment snippets pin `0.1.1` by digest
   (`sha256:90c14aba…`) rather than `0.1.0`. Verified against the published manifest: the
