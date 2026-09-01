@@ -149,19 +149,20 @@ Images and `checksums.txt` are signed with
 identity being attested is the release workflow itself.
 
 ```
-cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.2 \
+cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.1 \
   --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-The blob signature moved from two files to one at **v0.1.2**. cosign 3 replaced
-`--output-signature` and `--output-certificate` with a Sigstore bundle carrying the
-signature, the certificate and the Rekor inclusion proof together, so releases from
-v0.1.2 publish `checksums.txt.bundle` and v0.1.1 published `checksums.txt.sig` and
-`checksums.txt.pem`. Verify whichever the release you have actually carries:
+The blob signature changes in **the next release**, and `v0.1.1` is the newest one out
+today. cosign 3 replaced `--output-signature` and `--output-certificate` with a Sigstore
+bundle carrying the signature, the certificate and the Rekor inclusion proof together, so
+releases after `v0.1.1` publish `checksums.txt.bundle` where `v0.1.1` publishes
+`checksums.txt.sig` and `checksums.txt.pem`. Verify whichever the release you have
+actually carries — the release notes list its assets:
 
 ```
-# v0.1.2 and later
+# releases after v0.1.1
 cosign verify-blob \
   --bundle checksums.txt.bundle \
   --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
@@ -185,10 +186,10 @@ attestation — which commit and which workflow produced the bytes, rather than 
 they were signed. It needs no cosign install to check:
 
 ```
-gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.2 --repo raghulj/sidecartunnel
+gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.1 --repo raghulj/sidecartunnel
 ```
 
-| Artifact | v0.1.0 | v0.1.1 | v0.1.2 on |
+| Artifact | v0.1.0 | v0.1.1 | after v0.1.1 |
 |---|---|---|---|
 | Archives, `checksums.txt` | Yes | Yes | Yes |
 | SBOM per archive | Yes | Yes | Yes |

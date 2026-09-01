@@ -36,7 +36,7 @@ for a worked end-to-end run against a real application.
 - **Signing moved to cosign 3, and the blob signature is now one file.** cosign 3 removed
   `--output-signature` and `--output-certificate` from `sign-blob` in favour of a Sigstore
   bundle carrying the signature, the certificate and the Rekor inclusion proof together, so
-  releases from here publish `checksums.txt.bundle` where `v0.1.1` published
+  releases after `v0.1.1` publish `checksums.txt.bundle` where `v0.1.1` publishes
   `checksums.txt.sig` and `checksums.txt.pem`. Verification takes `--bundle` in place of
   `--certificate` and `--signature`, and no longer re-fetches the inclusion proof from
   Rekor. `README.md` and `docs/15-releasing.md` §4 carry both shapes, since `v0.1.1` is

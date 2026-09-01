@@ -199,7 +199,8 @@ cosign verify-blob \
   checksums.txt
 ```
 
-That is the shape from **v0.1.2** on. `v0.1.1` predates cosign 3 and carries
+That is the shape from **the first release after v0.1.1**. `v0.1.1` itself predates
+cosign 3 and carries
 `checksums.txt.sig` and `checksums.txt.pem` instead, verified with `--certificate` and
 `--signature` in place of `--bundle`. The bundle holds the signature, the certificate and
 the Rekor inclusion proof in one file, so verification no longer has to re-fetch the
@@ -224,8 +225,8 @@ workflow and not a consequence of a dependency bump.
 Two things changed in the move from cosign 2 to 3, and they were handled differently.
 
 `sign-blob` lost `--output-signature` and `--output-certificate` in favour of a single
-Sigstore bundle. There was no way to keep the old shape, so releases from v0.1.2 publish
-`checksums.txt.bundle`. That is a better artifact — it carries the Rekor inclusion proof
+Sigstore bundle. There was no way to keep the old shape, so releases after `v0.1.1`
+publish `checksums.txt.bundle`. That is a better artifact — it carries the Rekor inclusion proof
 with it — but it is a break, and it is why the version boundary is spelled out here and in
 `README.md` rather than left for someone to discover.
 
