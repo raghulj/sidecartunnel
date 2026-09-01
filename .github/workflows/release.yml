@@ -116,21 +116,15 @@ jobs:
         # signing looks identical to one that never signed.
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # Pinned, and not to this installer's default of v3.0.6. Installer v4 is the
-          # first to install cosign 3, and cosign 3 removed `--output-certificate` and
-          # `--output-signature` from `sign-blob` — both of which the `signs` block in
-          # .goreleaser.yaml passes. The release would fail at the signing step, and the
-          # `checksums.txt.sig` and `checksums.txt.pem` that README.md and
-          # docs/15-releasing.md §4 tell people to verify would stop being produced.
-          #
-          # v2.5.2 is what installer v3.9.1 defaulted to and what actually signed v0.1.1,
-          # so the artifacts stay verifiable with the commands already published.
-          #
-          # Migrating to cosign 3 is a real piece of work rather than a version bump:
-          # `sign-blob` takes `--bundle` instead of the two output flags, and `sign`
-          # defaults to storing container signatures as OCI 1.1 referring artifacts
-          # rather than a `.sig` tag. Both change what verifiers have to run.
-          cosign-release: v2.5.2
+          # Pinned explicitly rather than inherited from the installer's default, so the
+          # tool that produces the signatures is a decision recorded here and not a
+          # consequence of a Dependabot bump. Moving it changes what a release publishes:
+          # cosign 3 dropped --output-signature and --output-certificate from sign-blob in
+          # favour of a single Sigstore bundle, so releases from v0.1.2 carry
+          # checksums.txt.bundle where v0.1.1 carried checksums.txt.sig and
+          # checksums.txt.pem. .goreleaser.yaml and docs/15-releasing.md §4 have the
+          # detail, and the image signature format is held at legacy on purpose.
+          cosign-release: v3.0.6
 
       - name: GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3

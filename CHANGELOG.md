@@ -13,18 +13,6 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A prerelease tag repointed `:latest` and `:X.Y` at the release candidate.** The moving
-  image tags were listed unconditionally in both architecture blocks and in
-  `docker_manifests`, so `release.prerelease: auto` kept an `-rc` out of the "latest
-  release" slot on GitHub while the registry tags production pulls moved to it anyway.
-  They are now guarded on `{{ if not .Prerelease }}`. Verified both ways with a local
-  GoReleaser run: `v0.1.2-rc.1` builds only `:v0.1.2-rc.1-{amd64,arm64}`, and `v0.1.2`
-  still builds all six per-architecture tags. `docs/15-releasing.md` §3 gains the
-  release-candidate rehearsal this makes safe — the thing that was missing when `v0.1.1`
-  had to be cut with four never-executed steps in the release job.
-
 ### Added
 
 - Every GitHub Actions dependency moved to its current major, still SHA-pinned, which also
@@ -43,7 +31,52 @@ for a worked end-to-end run against a real application.
   labels, the version metadata, `8000/tcp` and nothing else exposed, `nonroot:nonroot`, and
   a binary that answers `--version`. CI runs both on every pull request.
 
+### Changed
+
+- **Signing moved to cosign 3, and the blob signature is now one file.** cosign 3 removed
+  `--output-signature` and `--output-certificate` from `sign-blob` in favour of a Sigstore
+  bundle carrying the signature, the certificate and the Rekor inclusion proof together, so
+  releases from here publish `checksums.txt.bundle` where `v0.1.1` published
+  `checksums.txt.sig` and `checksums.txt.pem`. Verification takes `--bundle` in place of
+  `--certificate` and `--signature`, and no longer re-fetches the inclusion proof from
+  Rekor. `README.md` and `docs/15-releasing.md` §4 carry both shapes, since `v0.1.1` is
+  still published and still verifiable.
+- **Container signatures are held at cosign's legacy layout on purpose**, with
+  `--registry-referrers-mode=legacy` written explicitly in `docker_signs`. cosign 3 can
+  store them as OCI 1.1 referring artifacts instead, which changes where every verifier has
+  to look — including verifiers running older cosign — and would have silently invalidated
+  the `cosign verify` command already published for `v0.1.1`. That move is a decision with
+  its own compatibility question, not a side effect of a version bump.
+- The cosign **binary** version stays pinned in `release.yml`, now at `v3.0.6` rather than
+  `v2.5.2`. The tool that produces the signatures decides what a release publishes, so the
+  version is recorded in the workflow rather than inherited from the installer's default.
+- **The Go toolchain moved to 1.27 everywhere it is named** — the Dockerfile's build stage
+  and every `setup-go` step — so the archive binaries and the image binary in one release
+  come from the same compiler. Two toolchains build a release: the archives through
+  GoReleaser on the runner, the image binary inside the Dockerfile. Bumping only the
+  Dockerfile, which is what Dependabot proposed, would have shipped a release split across
+  1.26 and 1.27, and compiled the artifact production runs with a Go version that failed
+  this repository's own lint and coverage gates. The test matrix now covers 1.26 and 1.27:
+  `go.mod` still declares `go 1.26` as the minimum a consumer needs, which is a claim worth
+  testing, and 1.27 is what ships. `go.mod` itself is unchanged — building with a newer
+  toolchain than the directive does not raise the requirement on anyone downstream.
+
+- The compose examples and the deployment snippets pin `0.1.1` by digest
+  (`sha256:90c14aba…`) rather than `0.1.0`. Verified against the published manifest: the
+  cosign signature, the SLSA provenance attestation and `checksums.txt.sig` all resolve to
+  the release workflow at `refs/tags/v0.1.1`.
+
 ### Fixed
+
+- **A prerelease tag repointed `:latest` and `:X.Y` at the release candidate.** The moving
+  image tags were listed unconditionally in both architecture blocks and in
+  `docker_manifests`, so `release.prerelease: auto` kept an `-rc` out of the "latest
+  release" slot on GitHub while the registry tags production pulls moved to it anyway.
+  They are now guarded on `{{ if not .Prerelease }}`. Verified both ways with a local
+  GoReleaser run: `v0.1.2-rc.1` builds only `:v0.1.2-rc.1-{amd64,arm64}`, and `v0.1.2`
+  still builds all six per-architecture tags. `docs/15-releasing.md` §3 gains the
+  release-candidate rehearsal this makes safe — the thing that was missing when `v0.1.1`
+  had to be cut with four never-executed steps in the release job.
 
 - **The coverage gate honoured only the first three lines above a block.**
   `scripts/cover.sh` looked for a `// coverage:` justification in a fixed `start - 3`
@@ -83,24 +116,6 @@ for a worked end-to-end run against a real application.
   the flags.
 - The illustrative Dockerfile in `docs/10-operations.md` §1 had drifted to `golang:1.23`
   and omitted every label the real one sets. It is a pointer to the actual file now.
-
-### Changed
-
-- **The Go toolchain moved to 1.27 everywhere it is named** — the Dockerfile's build stage
-  and every `setup-go` step — so the archive binaries and the image binary in one release
-  come from the same compiler. Two toolchains build a release: the archives through
-  GoReleaser on the runner, the image binary inside the Dockerfile. Bumping only the
-  Dockerfile, which is what Dependabot proposed, would have shipped a release split across
-  1.26 and 1.27, and compiled the artifact production runs with a Go version that failed
-  this repository's own lint and coverage gates. The test matrix now covers 1.26 and 1.27:
-  `go.mod` still declares `go 1.26` as the minimum a consumer needs, which is a claim worth
-  testing, and 1.27 is what ships. `go.mod` itself is unchanged — building with a newer
-  toolchain than the directive does not raise the requirement on anyone downstream.
-
-- The compose examples and the deployment snippets pin `0.1.1` by digest
-  (`sha256:90c14aba…`) rather than `0.1.0`. Verified against the published manifest: the
-  cosign signature, the SLSA provenance attestation and `checksums.txt.sig` all resolve to
-  the release workflow at `refs/tags/v0.1.1`.
 
 ## [0.1.1] — 2026-09-02
 

@@ -142,34 +142,61 @@ before the rule existed. Only the digest cannot move.
 Cosign signatures, build provenance and an image SBOM start at **v0.1.1**. `v0.1.0`
 predates all three and carries only the archives, `checksums.txt` and one SBOM per
 archive. A `cosign verify` against `v0.1.0` fails for that reason — nothing signed it —
-and not because anything was tampered with. Verify `v0.1.1` or later.
+and not because anything was tampered with.
 
 Images and `checksums.txt` are signed with
 [cosign](https://docs.sigstore.dev) keyless, so there is no public key to distribute; the
 identity being attested is the release workflow itself.
 
 ```
-cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.1 \
+cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.2 \
   --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The blob signature moved from two files to one at **v0.1.2**. cosign 3 replaced
+`--output-signature` and `--output-certificate` with a Sigstore bundle carrying the
+signature, the certificate and the Rekor inclusion proof together, so releases from
+v0.1.2 publish `checksums.txt.bundle` and v0.1.1 published `checksums.txt.sig` and
+`checksums.txt.pem`. Verify whichever the release you have actually carries:
+
+```
+# v0.1.2 and later
+cosign verify-blob \
+  --bundle checksums.txt.bundle \
+  --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+# v0.1.1
+cosign verify-blob \
+  --certificate checksums.txt.pem --signature checksums.txt.sig \
+  --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
+Image signatures are unaffected: they stay in cosign's legacy `.sig`-tag layout rather
+than moving to OCI 1.1 referring artifacts, so the `cosign verify` above is the same
+command for every signed release.
 
 Every archive, `checksums.txt` and the image also carry a signed build provenance
 attestation — which commit and which workflow produced the bytes, rather than only that
 they were signed. It needs no cosign install to check:
 
 ```
-gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.1 --repo raghulj/sidecartunnel
+gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.2 --repo raghulj/sidecartunnel
 ```
 
-| Artifact | v0.1.0 | v0.1.1 on |
-|---|---|---|
-| Archives, `checksums.txt` | Yes | Yes |
-| SBOM per archive | Yes | Yes |
-| SBOM for the image | No | Yes |
-| `checksums.txt.sig`, `.pem` | No | Yes |
-| Image cosign signature | No | Yes |
-| Build provenance attestation | No | Yes |
+| Artifact | v0.1.0 | v0.1.1 | v0.1.2 on |
+|---|---|---|---|
+| Archives, `checksums.txt` | Yes | Yes | Yes |
+| SBOM per archive | Yes | Yes | Yes |
+| SBOM for the image | No | Yes | Yes |
+| Image cosign signature | No | Yes | Yes |
+| Build provenance attestation | No | Yes | Yes |
+| `checksums.txt.sig` + `.pem` | No | Yes | No |
+| `checksums.txt.bundle` | No | No | Yes |
 
 The full verification procedure is in [`docs/15-releasing.md`](docs/15-releasing.md).
 
