@@ -112,6 +112,25 @@ Annotated tags, always: `git tag -a` records the tagger and the date, and GoRele
 that date. A lightweight tag leaves the release metadata pointing at the commit's
 timestamp instead.
 
+### Rehearsing With A Release Candidate
+
+A change to the release pipeline itself — the signing config, a new step, a GoReleaser
+upgrade — cannot be tested by CI, because `release.yml` only runs on a tag push. Cut a
+prerelease first:
+
+```sh
+git tag -a v0.2.0-rc.1 -m "v0.2.0-rc.1"
+git push origin v0.2.0-rc.1
+```
+
+`release.prerelease: auto` keeps it out of the "latest release" slot on the repository
+page, and the image tag guards in `.goreleaser.yaml` mean it publishes `:v0.2.0-rc.1` and
+nothing else — `:latest` and `:X.Y` are not repointed. Without those guards a rehearsal
+tag would move the tags production pulls, which is why `v0.1.1` was cut without one.
+
+The rehearsal costs a permanent tag and a prerelease entry. That is cheaper than finding
+out a signing step is broken on the tag people are going to pin.
+
 **`refs/tags/v*` is protected against update and deletion.** A pushed tag is final: it
 cannot be moved to a different commit and cannot be deleted, by anyone, including an
 administrator. Check `git log -1` before pushing it. That rule exists because the `v0.1.0`

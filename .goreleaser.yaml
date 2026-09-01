@@ -167,8 +167,13 @@ dockers:
     use: buildx
     image_templates:
       - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-amd64"
-      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-amd64"
-      - "{{ .Env.IMAGE_REPO }}:latest-amd64"
+      # The moving tags are built only for a real release. A prerelease is a rehearsal:
+      # `release.prerelease: auto` already keeps v0.2.0-rc.1 out of the "latest release"
+      # slot on GitHub, and without these guards the same tag would still repoint
+      # :latest and :X.Y at the release candidate in the registry. An empty template is
+      # skipped.
+      - "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-amd64{{ end }}"
+      - "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:latest-amd64{{ end }}"
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=VERSION={{ .Version }}"
@@ -193,8 +198,13 @@ dockers:
     use: buildx
     image_templates:
       - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-arm64"
-      - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-arm64"
-      - "{{ .Env.IMAGE_REPO }}:latest-arm64"
+      # The moving tags are built only for a real release. A prerelease is a rehearsal:
+      # `release.prerelease: auto` already keeps v0.2.0-rc.1 out of the "latest release"
+      # slot on GitHub, and without these guards the same tag would still repoint
+      # :latest and :X.Y at the release candidate in the registry. An empty template is
+      # skipped.
+      - "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-arm64{{ end }}"
+      - "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:latest-arm64{{ end }}"
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=VERSION={{ .Version }}"
@@ -216,12 +226,15 @@ docker_manifests:
       - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-amd64"
       - "{{ .Env.IMAGE_REPO }}:{{ .Tag }}-arm64"
 
-  - name_template: "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}"
+  # Guarded the same way as the per-architecture tags above: a manifest whose
+  # name_template renders empty is skipped, so a prerelease publishes :vX.Y.Z-rc.N and
+  # nothing else.
+  - name_template: "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}{{ end }}"
     image_templates:
       - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-amd64"
       - "{{ .Env.IMAGE_REPO }}:{{ .Major }}.{{ .Minor }}-arm64"
 
-  - name_template: "{{ .Env.IMAGE_REPO }}:latest"
+  - name_template: "{{ if not .Prerelease }}{{ .Env.IMAGE_REPO }}:latest{{ end }}"
     image_templates:
       - "{{ .Env.IMAGE_REPO }}:latest-amd64"
       - "{{ .Env.IMAGE_REPO }}:latest-arm64"
