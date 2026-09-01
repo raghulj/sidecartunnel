@@ -116,6 +116,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The Makefile derives the version from `git describe --tags`, and the default
+          # shallow clone carries no tags -- which would build and check an image whose
+          # version metadata came from the fallback rather than from the repository.
+          fetch-depth: 0
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -123,9 +128,24 @@ jobs:
           check-latest: true
 
       - name: Build
-        # Same flags as the release image in docs/10-operations.md §1.
-        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/sidecartunnel ./cmd/sidecartunnel
+        # Through the Makefile rather than a second copy of the flags here. The two lists
+        # drifted once already: the Makefile's comment claimed parity with the release
+        # build while neither it nor this step passed the -X flags at all, so every
+        # locally built binary reported version "dev".
+        run: make build
 
       - name: Report binary size
         # NFR-6 targets a release image under 20 MB. The binary is nearly all of it.
         run: ls -l bin/sidecartunnel
+
+      - name: Build the image
+        # The same Dockerfile and the same build args the release uses, so the metadata
+        # checked below is the metadata a release produces.
+        run: make image
+
+      - name: Image metadata gate
+        # docs/15-releasing.md §4 listed these checks and every one of them was manual and
+        # after the fact, which is why the first release shipped an image carrying nine OCI
+        # labels while every other build path produced one carrying none. Running them here
+        # fails the pull request instead of a published image nobody re-inspects.
+        run: make image-check

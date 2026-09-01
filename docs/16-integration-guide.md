@@ -968,6 +968,10 @@ From the repository root:
 docker build -t sidecartunnel:dev .
 ```
 
+`make image` runs the same build with `VERSION`, `COMMIT` and `DATE` derived from git, so
+the image reports something other than `dev` when asked. Either produces the same layers
+and the same nine OCI labels; only the values of the three generated ones differ.
+
 | Measure | Value |
 |---|---|
 | Binary | 8.65 MB |

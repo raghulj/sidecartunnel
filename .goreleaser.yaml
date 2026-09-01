@@ -148,6 +148,11 @@ docker_signs:
       - "--yes"
 
 dockers:
+  # The OCI labels are NOT here. They are `LABEL` instructions in the Dockerfile, so that
+  # a release image and a `docker build .` carry the same metadata. As nine `--label`
+  # flags duplicated across both blocks below, the release image had all nine and every
+  # other build path had none.
+  #
   # One entry per architecture, joined into a manifest list below. The Dockerfile compiles
   # from source rather than copying the archive binary, which costs a rebuild but keeps a
   # bare `docker build .` working from a clean checkout — and its build stage pins
@@ -169,15 +174,6 @@ dockers:
       - "--build-arg=VERSION={{ .Version }}"
       - "--build-arg=COMMIT={{ .FullCommit }}"
       - "--build-arg=DATE={{ .Date }}"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.description=Websocket gateway for applications that cannot hold long-lived connections"
-      - "--label=org.opencontainers.image.url=https://github.com/raghulj/sidecartunnel"
-      - "--label=org.opencontainers.image.source=https://github.com/raghulj/sidecartunnel"
-      - "--label=org.opencontainers.image.documentation=https://github.com/raghulj/sidecartunnel/tree/main/docs"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
     extra_files:
       # The build context the Dockerfile needs. Deliberately not the whole tree: docs/ and
       # the HTML companions are large and would land in the build cache key.
@@ -204,15 +200,6 @@ dockers:
       - "--build-arg=VERSION={{ .Version }}"
       - "--build-arg=COMMIT={{ .FullCommit }}"
       - "--build-arg=DATE={{ .Date }}"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.description=Websocket gateway for applications that cannot hold long-lived connections"
-      - "--label=org.opencontainers.image.url=https://github.com/raghulj/sidecartunnel"
-      - "--label=org.opencontainers.image.source=https://github.com/raghulj/sidecartunnel"
-      - "--label=org.opencontainers.image.documentation=https://github.com/raghulj/sidecartunnel/tree/main/docs"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
     extra_files:
       - go.mod
       - go.sum

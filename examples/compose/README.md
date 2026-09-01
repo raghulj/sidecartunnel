@@ -25,7 +25,7 @@ docker compose logs -f sidecartunnel
 To run a local build instead of the released image:
 
 ```sh
-docker build -t sidecartunnel:dev ../..
+make -C ../.. image        # `docker build ../..` also works; it stamps no version
 ST_IMAGE=sidecartunnel:dev docker compose up -d
 ```
 

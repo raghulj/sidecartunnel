@@ -2,23 +2,27 @@
 
 ## 1. The image
 
-Single static binary, `FROM scratch` or distroless, non-root, no shell. Target under 20 MB
-(NFR-6).
+Single static binary on distroless, non-root, no shell. Target under 20 MB (NFR-6).
 
-```dockerfile
-FROM golang:1.23-alpine AS build
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /sidecartunnel ./cmd/sidecartunnel
+The build is [`Dockerfile`](../Dockerfile) at the repository root and there is no second
+copy of it here — an illustrative Dockerfile in this section had drifted to a Go version
+two releases behind and omitted every label the real one sets, which is the failure mode a
+duplicate always has. Read the file.
 
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /sidecartunnel /sidecartunnel
-USER nonroot:nonroot
-EXPOSE 8000
-ENTRYPOINT ["/sidecartunnel"]
-```
+Every path that builds this image goes through that one file, so they all produce the same
+metadata:
+
+| Path | Version metadata | OCI labels |
+|---|---|---|
+| Release workflow, through GoReleaser | The tag, the full commit, the build time | All nine |
+| `make image` | Derived from `git describe`, the commit and its timestamp | All nine |
+| `docker build .` | `dev` / `none` / `unknown` — honest defaults, not absent ones | All nine |
+| `examples/flask`, which builds from source | Same as `docker build .` | All nine |
+
+`make image-check` asserts that, and CI runs it on every pull request. The labels used to
+be nine `--label` flags in `.goreleaser.yaml`, duplicated across the two architecture
+blocks, so the released image carried all nine and every other build produced an image
+whose `Config.Labels` was `null`.
 
 One port, and one listener behind it: the websocket endpoint, `GET /health` and
 `GET /ready`. There used to be a second listener on `:9001` carrying an operator API, kept
