@@ -101,6 +101,52 @@ sboms:
   - id: archives
     artifacts: archive
 
+signs:
+  # Keyless signing: cosign gets a short-lived certificate from Fulcio, tied to this
+  # workflow's OIDC identity, and the signature lands in the Rekor transparency log.
+  # There is no private key to leak, rotate, or forget to rotate.
+  #
+  # Only checksums.txt is signed, not each archive. The checksum file already covers
+  # every archive by sha256, so one signature over it is one signature over all of them;
+  # signing six archives separately would produce six things to verify and the same
+  # guarantee.
+  #
+  #   cosign verify-blob \
+  #     --certificate checksums.txt.pem \
+  #     --signature checksums.txt.sig \
+  #     --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  #     checksums.txt
+  - id: checksums
+    cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+docker_signs:
+  # The manifest lists, signed by digest rather than by tag. A tag is mutable — signing
+  # `:latest` would sign whatever `:latest` happens to point at when someone verifies,
+  # which is not a signature over anything in particular. `${artifact}@${digest}` pins it
+  # to the bytes that were actually built here.
+  #
+  #   cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.0 \
+  #     --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  - id: manifests
+    cmd: cosign
+    artifacts: manifests
+    output: true
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
+
 dockers:
   # One entry per architecture, joined into a manifest list below. The Dockerfile compiles
   # from source rather than copying the archive binary, which costs a rebuild but keeps a
@@ -244,5 +290,14 @@ release:
     docker pull ghcr.io/raghulj/sidecartunnel:{{ .Tag }}
     ```
 
-    Verify an archive against `checksums.txt` before running it. Release procedure and
-    verification steps: [docs/15-releasing.md](https://github.com/raghulj/sidecartunnel/blob/main/docs/15-releasing.md).
+    Images and `checksums.txt` are signed with [cosign](https://docs.sigstore.dev) keyless,
+    against this workflow's OIDC identity. There is no public key to fetch:
+
+    ```
+    cosign verify ghcr.io/raghulj/sidecartunnel:{{ .Tag }} \
+      --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    Release procedure and the archive verification steps:
+    [docs/15-releasing.md](https://github.com/raghulj/sidecartunnel/blob/main/docs/15-releasing.md).

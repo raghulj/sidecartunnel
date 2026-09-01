@@ -61,8 +61,9 @@ jobs:
       contents: write
       # Push the image to ghcr.io.
       packages: write
-      # Keyless signing and provenance attestation, so an artifact can be traced to this
-      # workflow run rather than to a long-lived secret.
+      # The OIDC token cosign exchanges with Fulcio for a short-lived signing certificate.
+      # This is what makes the signatures keyless: the identity being attested is this
+      # workflow, not a private key sitting in a repository secret.
       id-token: write
 
     steps:
@@ -97,6 +98,13 @@ jobs:
         # GoReleaser shells out to syft for the SBOMs; without it on PATH the sbom step
         # fails the release.
         uses: anchore/sbom-action/download-syft@v0
+
+      - name: Install cosign
+        # GoReleaser shells out to cosign for `signs` and `docker_signs`, the same way it
+        # does to syft. Without it on PATH the signing steps fail the release rather than
+        # skipping quietly, which is the behaviour I want: a release that silently stopped
+        # signing looks identical to one that never signed.
+        uses: sigstore/cosign-installer@v3
 
       - name: GoReleaser
         uses: goreleaser/goreleaser-action@v6

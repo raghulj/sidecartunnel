@@ -13,7 +13,18 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Release artifacts are signed.** Images and `checksums.txt` are signed with cosign
+  keyless, against the release workflow's OIDC identity rather than a stored key. Images
+  are signed by digest, not by tag, because `:latest` and `:X.Y` both move. Verification
+  commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4.
+
+### Fixed
+
+- The release workflow requested `id-token: write` and its comment claimed keyless signing
+  and provenance attestation, but nothing in the pipeline signed anything. The permission
+  was real and the signing was not. It signs now.
 
 ## [0.1.0] — 2026-08-31
 
