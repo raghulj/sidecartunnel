@@ -222,7 +222,29 @@ func TestConsumer_ControlRejections(t *testing.T) {
 			f.publish(t, f.hub.ControlKey(), sign(testSecret, testNow, `{"action":"disconnect","user":"u-7"}`))
 			s.waitClose(t)
 
-			stats := f.consumer.Stats()
+			// waitClose observes the effect of the disconnect, not the bookkeeping that
+			// follows it: the counters are incremented by the consumer goroutine after it
+			// has closed the sink, so reading Stats() the instant waitClose returns races
+			// that goroutine. It held under Go 1.26 and fails about three batches in five
+			// of 200 runs under 1.27 -- "ControlApplied = 0, want exactly the one valid
+			// message" -- purely on scheduling.
+			//
+			// Wait for the two counters to reach the values the test is about to assert.
+			// This is a failure detector rather than a sleep: both messages have already
+			// been handled, so on the happy path this returns on the first read, and the
+			// assertions below are unchanged.
+			var stats Stats
+			deadline := time.Now().Add(waitFor)
+			for {
+				stats = f.consumer.Stats()
+				if stats.ControlRejected == 1 && stats.ControlApplied == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
 			if got := tt.count(stats); got != 1 {
 				t.Fatalf("the %s counter = %d, want 1: %+v", tt.reason, got, stats)
 			}

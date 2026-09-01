@@ -68,6 +68,14 @@ for a worked end-to-end run against a real application.
 
 ### Fixed
 
+- **`TestConsumer_ControlRejections` raced the consumer's own bookkeeping.** It read
+  `Stats()` the instant `waitClose` returned, but the counters are incremented by the
+  consumer goroutine *after* it closes the sink, so the read raced that goroutine. It held
+  under Go 1.26 and failed about three batches in five of 200 runs under 1.27 —
+  `ControlApplied = 0, want exactly the one valid message`. It now waits for the two
+  counters to reach the values it is about to assert, which returns on the first read on
+  the happy path. Clean at 1000 runs on each of 1.26 and 1.27.
+
 - **A prerelease tag repointed `:latest` and `:X.Y` at the release candidate.** The moving
   image tags were listed unconditionally in both architecture blocks and in
   `docker_manifests`, so `release.prerelease: auto` kept an `-rc` out of the "latest
