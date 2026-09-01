@@ -13,13 +13,20 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-02
+
+Supply chain. No change to the gateway itself — the binary, the protocol and the
+configuration keys are identical to `0.1.0`. What changed is what can be verified about the
+artifacts, and which of them can be moved after the fact.
+
 ### Added
 
 - **Release artifacts are signed.** Images and `checksums.txt` are signed with cosign
   keyless, against the release workflow's OIDC identity rather than a stored key. Images
   are signed by digest, not by tag, because `:latest` and `:X.Y` both move. Verification
-  commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4. This starts at the
-  next release; `v0.1.0` predates it and carries no signatures.
+  commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4. Signing starts here:
+  `v0.1.0` was tagged before the `signs` and `docker_signs` blocks existed and carries no
+  signatures at all.
 - **Build provenance attestations** over every archive, `checksums.txt`, and the image.
   A cosign signature says this workflow signed these bytes; provenance says which commit
   and which workflow produced them. `gh attestation verify` checks it with no cosign
