@@ -342,10 +342,29 @@ var conformanceCases = []conformanceCase{
 			}
 
 			// A Sync is a fence: it completes only once the transport has confirmed the
-			// subscription, and that confirmation arrives behind every message published
-			// before it. So when this returns, the reader has already handled the whole
-			// burst and the drop count below is exact rather than "eventually".
+			// subscription. Against a real Redis that confirmation genuinely arrives
+			// behind every message published before it -- Redis is single-threaded, so a
+			// PUBLISH that has returned is already queued to this subscriber's output
+			// buffer, ahead of a SUBSCRIBE sent afterwards.
 			mustSync(t, h.bus, ch, h.key("fence"))
+
+			// miniredis offers no such ordering. It is a concurrent Go implementation on
+			// its own locks, and a PUBLISH can return before the message reaches the
+			// subscriber connection, which lets the fence overtake the tail of the burst.
+			// The drain below then runs while the reader is still working and finds a
+			// message that should have been counted as dropped: "Dropped = 198, want 199"
+			// and a leftover "burst" where "after the burst" was expected. Rare under Go
+			// 1.26 and about two runs in three under 1.27, purely on scheduling.
+			//
+			// So wait for the count rather than trusting the fence. This is a wait for a
+			// known final value, not a sleep: the intake holds one message and nothing is
+			// draining it, so of a burst of 200 exactly 199 must end up dropped. When the
+			// counter reaches that, every message has been through read() and the
+			// assertions below are exact again.
+			deadline := time.Now().Add(receiveTimeout)
+			for health(t, h.bus).Dropped < uint64(burst-1) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
 
 			drained := 0
 			for draining := true; draining; {

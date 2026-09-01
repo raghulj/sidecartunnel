@@ -56,6 +56,16 @@ for a worked end-to-end run against a real application.
   however far it runs. Reproduced by feeding the gate a profile carrying 1.27's block
   boundaries: the old gate prints `main.go:48 (3 stmt)` and fails, the new one passes, and
   an unmodified 1.26 profile is unaffected under both.
+- **The M8 intake test raced its own fence under miniredis.** It drained the intake as
+  soon as `Sync` returned, on the reasoning that a subscribe confirmation arrives behind
+  every message published before it. That holds against a real Redis, which is
+  single-threaded, so a `PUBLISH` that has returned is already queued to the subscriber
+  ahead of a later `SUBSCRIBE`. miniredis is concurrent Go and gives no such ordering, so
+  the fence could overtake the tail of the burst and the drain would find a message that
+  should have been counted as dropped — `Dropped = 198, want 199`. Rare under Go 1.26 and
+  about two runs in three under 1.27, purely on scheduling. It now waits for the drop
+  counter to reach the only value it can finally have, which is a wait for a known number
+  rather than a sleep, and the assertions are unchanged and still exact.
 - **Go 1.27 could not be linted.** golangci-lint v2.12.2 links `go/types` from Go 1.25 and
   panics on 1.27 source rather than reporting anything. Moved to v2.13.2.
 
