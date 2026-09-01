@@ -6,6 +6,13 @@ name: release
 # The gates run first and the release depends on them. A tag that fails the coverage gate
 # produces no artifacts at all — a release that shipped untested code would be worse than
 # a release that did not happen, because it is the version people pin.
+#
+# Every `uses:` here is pinned to a commit SHA with the version in a trailing comment,
+# never to a tag. A tag on someone else's repository is a pointer they can move, and this
+# job holds `contents: write`, `packages: write` and an OIDC token that signs in my name —
+# moving one of those tags is enough to publish a release with my identity on it. That is
+# how tj-actions/changed-files went. Dependabot updates the SHAs and rewrites the comment,
+# so the pin costs nothing to keep current.
 
 on:
   push:
@@ -36,9 +43,9 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -61,19 +68,22 @@ jobs:
       contents: write
       # Push the image to ghcr.io.
       packages: write
-      # The OIDC token cosign exchanges with Fulcio for a short-lived signing certificate.
-      # This is what makes the signatures keyless: the identity being attested is this
-      # workflow, not a private key sitting in a repository secret.
+      # The OIDC token cosign and the attestation action exchange with Fulcio for a
+      # short-lived signing certificate. This is what makes the signatures keyless: the
+      # identity being attested is this workflow, not a private key sitting in a
+      # repository secret.
       id-token: write
+      # Record the build provenance attestations against this repository.
+      attestations: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # GoReleaser builds the changelog from the commit range since the previous tag,
           # so a shallow clone produces an empty one.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -82,13 +92,13 @@ jobs:
         # Registers the binfmt handlers buildx needs to touch a non-native architecture.
         # The Go cross-compile itself stays native — the Dockerfile's build stage pins
         # --platform=$BUILDPLATFORM — but the base image manifests still have to resolve.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -97,17 +107,17 @@ jobs:
       - name: Install syft
         # GoReleaser shells out to syft for the SBOMs; without it on PATH the sbom step
         # fails the release.
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Install cosign
         # GoReleaser shells out to cosign for `signs` and `docker_signs`, the same way it
         # does to syft. Without it on PATH the signing steps fail the release rather than
         # skipping quietly, which is the behaviour I want: a release that silently stopped
         # signing looks identical to one that never signed.
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -118,3 +128,86 @@ jobs:
           # publishes to its own registry by setting one repository variable rather
           # than editing .goreleaser.yaml (Settings -> Secrets and variables -> Actions).
           IMAGE_REPO: ${{ vars.IMAGE_REPO }}
+
+      - name: Resolve the published manifest digest
+        # Everything downstream addresses the image by digest, never by tag. A tag is a
+        # mutable pointer: attesting `:v1.2.3` attests whatever `:v1.2.3` happens to point
+        # at when someone verifies it, which is not a statement about any particular
+        # bytes. The manifest list was pushed one step ago; this reads back the digest it
+        # actually landed on, and that digest is what goes in the release notes for people
+        # to pin.
+        id: image
+        env:
+          IMAGE_REPO: ${{ vars.IMAGE_REPO }}
+        run: |
+          set -euo pipefail
+          # Same fallback as .goreleaser.yaml: an unset repository variable arrives as the
+          # empty string, not as absent, so test the value rather than whether it is set.
+          repo="${IMAGE_REPO:-}"
+          if [ -z "${repo}" ]; then
+            repo="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          fi
+          digest="$(docker buildx imagetools inspect "${repo}:${GITHUB_REF_NAME}" \
+            --format '{{ .Manifest.Digest }}')"
+          echo "repo=${repo}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "::notice title=Image digest::${repo}@${digest}"
+
+      - name: Image SBOM
+        # GoReleaser produces one SBOM per archive. The archives are not what production
+        # runs — the image is, and it carried no SBOM at all, which is the one that
+        # matters when an advisory lands against something in the base layer. syft is
+        # already on PATH from the install step above.
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.repo }}@${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          syft scan "registry:${IMAGE_REF}" \
+            -o spdx-json="dist/sidecartunnel_${version}_image.sbom.json"
+
+      - name: Attach the image SBOM to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist/sidecartunnel_${version}_image.sbom.json" --clobber
+
+      - name: Publish the digest in the release notes
+        # The release notes are the one place everybody looks, so the digest to pin goes
+        # there rather than behind an `imagetools inspect` most people will not run. A tag
+        # is a pointer; this is the bytes.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REPO: ${{ steps.image.outputs.repo }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          body="$(gh release view "${GITHUB_REF_NAME}" --json body --jq '.body')"
+          printf '%s\n\n### Pin This Digest\n\n```\n%s@%s\n```\n\nThe tag above is a mutable pointer; the digest is not. Deployments should name the digest.\n' \
+            "${body}" "${IMAGE_REPO}" "${IMAGE_DIGEST}" > release-notes.md
+          gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
+
+      - name: Attest the image
+        # Signed provenance: what built this image, from which commit, with which
+        # workflow. cosign's signature says "this workflow signed these bytes";
+        # provenance says how the bytes came to exist. `gh attestation verify` checks it
+        # without cosign installed, which matters for the people who will actually run
+        # the check.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.repo }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          # Also stored alongside the image in GHCR, so a puller with the digest and no
+          # access to this repository's attestation store can still verify it.
+          push-to-registry: true
+
+      - name: Attest the release archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

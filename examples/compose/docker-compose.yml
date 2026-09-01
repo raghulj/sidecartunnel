@@ -10,14 +10,17 @@ name: sidecartunnel-example
 
 services:
   sidecartunnel:
-    # Pin a released tag — `:vX.Y.Z` — before running this anywhere real. No release has
-    # been cut yet, so `:latest` does not resolve and `docker compose up` fails with
-    # `manifest unknown`. Until one is cut, build the image from the repository root and
-    # point ST_IMAGE at it:
+    # Pinned to a digest, not a tag. `:latest` and `:vX.Y.Z` are both pointers someone can
+    # move; the digest is the bytes that were built and signed. The tag is kept alongside
+    # it so the line still says which release this is — Docker resolves the digest and
+    # ignores the tag.
+    #
+    # Each release prints its digest in its own release notes. To run a local build
+    # instead:
     #
     #     docker build -t sidecartunnel:dev .
     #     ST_IMAGE=sidecartunnel:dev docker compose up -d
-    image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:latest}
+    image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:v0.1.0@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1}
 
     environment:
       # Exact origins, no wildcards. Startup fails if this is empty.

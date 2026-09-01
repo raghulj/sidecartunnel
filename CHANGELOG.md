@@ -18,7 +18,20 @@ for a worked end-to-end run against a real application.
 - **Release artifacts are signed.** Images and `checksums.txt` are signed with cosign
   keyless, against the release workflow's OIDC identity rather than a stored key. Images
   are signed by digest, not by tag, because `:latest` and `:X.Y` both move. Verification
-  commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4.
+  commands are in [`docs/15-releasing.md`](docs/15-releasing.md) §4. This starts at the
+  next release; `v0.1.0` predates it and carries no signatures.
+- **Build provenance attestations** over every archive, `checksums.txt`, and the image.
+  A cosign signature says this workflow signed these bytes; provenance says which commit
+  and which workflow produced them. `gh attestation verify` checks it with no cosign
+  install, which is the check other people will actually run. The image's attestation is
+  also pushed to GHCR, so a puller who has the digest and no access to this repository can
+  still verify it.
+- **An SBOM for the container image**, not only for the archives. The image is what
+  production runs and it had none, which is the one that matters when an advisory lands
+  against something in the base layer. It is attached to the release as
+  `sidecartunnel_<version>_image.sbom.json`.
+- **The manifest list digest is appended to every release's notes**, under *Pin This
+  Digest*, so pinning correctly does not require running `imagetools inspect`.
 - `SECURITY.md` — private disclosure through GitHub advisories, plus what is in scope and
   what is not. The gateway enforcing an application's decision incorrectly is in scope; the
   application making a bad decision is not.
@@ -27,6 +40,19 @@ for a worked end-to-end run against a real application.
 
 ### Changed
 
+- **Every GitHub Actions `uses:` is pinned to a commit SHA** rather than a tag, with the
+  version in a trailing comment. All twelve floated, four of them inside the release job,
+  which holds `contents: write`, `packages: write` and an OIDC token that signs releases
+  under my identity. A tag on someone else's repository is a pointer they can move;
+  `anchore/sbom-action/download-syft@v0` was a floating major, the loosest form there is.
+  Dependabot updates the SHAs and rewrites the comments.
+- **`refs/tags/v*` is protected against update and deletion**, with no bypass for
+  administrators. The `v0.1.0` tag was pushed at two different commits during two release
+  attempts and nothing stopped it. `docs/15-releasing.md` §6 has the procedure for the rare
+  case where a tag genuinely has to be removed.
+- **The compose examples and the deployment snippets pin the image by digest**, keeping the
+  tag alongside it for readability. `examples/compose` previously defaulted to `:latest`
+  with a comment saying no release existed; one does.
 - The compose example in the README and `docs/10-operations.md` §1 pointed at
   `ghcr.io/…/sidecartunnel:1.0.0` — an ellipsis and a version that does not exist. It now
   names the image that is actually published.
@@ -36,6 +62,11 @@ for a worked end-to-end run against a real application.
 - The release workflow requested `id-token: write` and its comment claimed keyless signing
   and provenance attestation, but nothing in the pipeline signed anything. The permission
   was real and the signing was not. It signs now.
+- **The README claimed `v0.1.0` was signed and gave a `cosign verify` command for it.**
+  Signing was added after that tag shipped, so the command fails — and a failed `cosign
+  verify` reads as tampering rather than as an absent signature, which is worse than
+  documenting nothing. The README and `docs/15-releasing.md` §4 now say which release each
+  guarantee starts at.
 
 ## [0.1.0] — 2026-08-31
 
