@@ -111,19 +111,23 @@ signs:
   # signing six archives separately would produce six things to verify and the same
   # guarantee.
   #
+  # cosign 3 replaced --output-signature and --output-certificate with a single Sigstore
+  # bundle holding the signature, the certificate and the Rekor inclusion proof together.
+  # So this publishes checksums.txt.bundle where v0.1.1 published checksums.txt.sig and
+  # checksums.txt.pem. One file, one flag on the verify side, and the inclusion proof no
+  # longer has to be re-fetched from Rekor at verification time.
+  #
   #   cosign verify-blob \
-  #     --certificate checksums.txt.pem \
-  #     --signature checksums.txt.sig \
+  #     --bundle checksums.txt.bundle \
   #     --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
   #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   #     checksums.txt
   - id: checksums
     cmd: cosign
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
       - "--yes"
     artifacts: checksum
@@ -135,7 +139,14 @@ docker_signs:
   # which is not a signature over anything in particular. `${artifact}@${digest}` pins it
   # to the bytes that were actually built here.
   #
-  #   cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.0 \
+  # --registry-referrers-mode=legacy is explicit rather than inherited. cosign 3 can store
+  # a container signature as an OCI 1.1 referring artifact instead of the `.sig` tag, and
+  # that changes where every verifier has to look. Legacy is what v0.1.1 published and what
+  # the documented `cosign verify` command finds, so the storage format stays put while the
+  # tool moves. Switching it is a separate decision with its own compatibility question,
+  # not a side effect of a version bump.
+  #
+  #   cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.2 \
   #     --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
   #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   - id: manifests
@@ -144,6 +155,7 @@ docker_signs:
     output: true
     args:
       - sign
+      - "--registry-referrers-mode=legacy"
       - "${artifact}@${digest}"
       - "--yes"
 
@@ -300,6 +312,12 @@ release:
     cosign verify {{ .Env.IMAGE_REPO }}:{{ .Tag }} \
       --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+    cosign verify-blob \
+      --bundle checksums.txt.bundle \
+      --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      checksums.txt
     ```
 
     Every artifact also carries a signed build provenance attestation, which needs no
