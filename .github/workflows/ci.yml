@@ -31,13 +31,19 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          # The linter binary, pinned separately from the action's own SHA -- the action
+          # is a downloader and the two move independently. v2.12.2 links go/types from
+          # Go 1.25 and panics outright on 1.27 source rather than reporting anything:
+          # "file requires newer Go version go1.27 (application built with go1.26)".
+          # golangci-lint's stated policy is that its go.mod minimum is always latest-1,
+          # so v2.13.2 declaring go 1.26.0 is the release built for 1.27.
+          version: v2.13.2
 
       - name: gofmt
         # `gofmt -l` prints nothing when everything is formatted, and exits 0 either way,
@@ -58,7 +64,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26"]
+        # Both ends of the supported range. 1.26 is the `go` directive in go.mod, the
+        # minimum a consumer of this module needs, and it is worth testing rather than
+        # asserting. 1.27 is what the release is actually compiled with, in the Dockerfile
+        # and on the runner. Shipping one and testing the other is how a toolchain
+        # regression reaches a release.
+        go: ["1.26", "1.27"]
 
     services:
       redis:
@@ -124,7 +135,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
 
       - name: Build
