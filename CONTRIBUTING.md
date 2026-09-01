@@ -54,7 +54,9 @@ three things CI runs.
 | `make test` | `go test -race -cover ./...` |
 | `make cover` | 100% coverage gate, with a per-package table |
 | `make lint` | `golangci-lint run ./...` |
-| `make build` | The binary, with the release flags |
+| `make build` | The binary, with the release flags and the version stamped from git |
+| `make image` | The release image, with the same build args a release passes |
+| `make image-check` | Assert the image carries the labels and version metadata a release carries |
 | `make redis` | A throwaway Redis on `:6379` for the integration tests |
 | `make redis-stop` | Remove it |
 | `make clean` | Remove build and coverage artifacts |

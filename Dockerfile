@@ -19,8 +19,9 @@ RUN go mod download
 
 COPY . .
 
-# Version metadata. GoReleaser and the release workflow pass these; a bare `docker build .`
-# gets the "dev" defaults rather than failing.
+# Version metadata. GoReleaser, `make image` and a bare `docker build .` all pass these
+# the same way; the defaults are what an unadorned `docker build .` gets, and they are
+# honest rather than absent.
 ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown
@@ -40,6 +41,30 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /sidecartunnel /sidecartunnel
+
+# Re-declared: an ARG is scoped to the stage that declares it, and these three are needed
+# again here for the labels below.
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+
+# The OCI labels live here rather than in .goreleaser.yaml, so that every path that builds
+# this image produces the same metadata. They used to be nine `--label` flags duplicated
+# across the amd64 and arm64 blocks of .goreleaser.yaml, which meant the release image
+# carried all nine and a local `docker build .` carried none at all — `Config.Labels` came
+# back `null`. `image.source` is the one with teeth: it is what links a GHCR package back
+# to its repository and what most scanners key on.
+#
+# After VERSION, so a version bump does not invalidate the layer holding the binary.
+LABEL org.opencontainers.image.title="sidecartunnel" \
+      org.opencontainers.image.description="Websocket gateway for applications that cannot hold long-lived connections" \
+      org.opencontainers.image.url="https://github.com/raghulj/sidecartunnel" \
+      org.opencontainers.image.source="https://github.com/raghulj/sidecartunnel" \
+      org.opencontainers.image.documentation="https://github.com/raghulj/sidecartunnel/tree/main/docs" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${DATE}"
 
 USER nonroot:nonroot
 

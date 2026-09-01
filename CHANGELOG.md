@@ -13,6 +13,30 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
+### Added
+
+- **`make image` and `make image-check`.** One documented way to build the image outside a
+  release, and a gate that asserts it carries what a released image carries — the nine OCI
+  labels, the version metadata, `8000/tcp` and nothing else exposed, `nonroot:nonroot`, and
+  a binary that answers `--version`. CI runs both on every pull request.
+
+### Fixed
+
+- **Only the release workflow produced a complete image.** All nine OCI labels were
+  `--label` flags in `.goreleaser.yaml`, duplicated across the amd64 and arm64 blocks, so
+  the published image carried them and a `docker build .` — the command the compose example
+  and `docs/16-integration-guide.md` §13.1 both tell you to run — produced an image whose
+  `Config.Labels` was `null`. `org.opencontainers.image.source` is the label that links a
+  GHCR package back to its repository. The labels are now `LABEL` instructions in the
+  Dockerfile, which is the one file every build path goes through.
+- **`make build` stamped no version.** Its comment claimed identical flags to the release
+  build while it passed no `-X` at all, so every locally built binary reported
+  `dev / none / unknown`. It now derives the version from `git describe`, the commit and
+  the commit's timestamp, and CI's build job calls it rather than keeping a second copy of
+  the flags.
+- The illustrative Dockerfile in `docs/10-operations.md` §1 had drifted to `golang:1.23`
+  and omitted every label the real one sets. It is a pointer to the actual file now.
+
 ### Changed
 
 - The compose examples and the deployment snippets pin `0.1.1` by digest

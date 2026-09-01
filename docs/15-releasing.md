@@ -224,7 +224,10 @@ The release workflow appends that digest to the release notes under **Pin This D
 Check that the two agree before announcing the release: if they do not, something repointed
 the tag between the push and now, which is the exact event the pin exists to survive.
 
-The image is where the mistakes with consequences live:
+The image is where the mistakes with consequences live. Most of the table below is now
+gated in CI by `make image-check`, which runs the same assertions against a locally built
+image on every pull request — the checks here are the confirmation that what was published
+is what was tested, not the first time anybody looks:
 
 | Check | Command | Expected |
 |---|---|---|
@@ -232,7 +235,7 @@ The image is where the mistakes with consequences live:
 | Size under 20 MB (NFR-6) | `docker images ghcr.io/raghulj/sidecartunnel:v0.2.0` | Well under; the binary is nearly all of it |
 | Port 8000 only | `docker image inspect --format '{{json .Config.ExposedPorts}}' ghcr.io/raghulj/sidecartunnel:v0.2.0` | `{"8000/tcp":{}}` and nothing else |
 | Non-root | `docker image inspect --format '{{.Config.User}}' ghcr.io/raghulj/sidecartunnel:v0.2.0` | `nonroot:nonroot` |
-| OCI labels | `docker image inspect --format '{{json .Config.Labels}}' ghcr.io/raghulj/sidecartunnel:v0.2.0` | `source`, `revision`, `version`, `licenses`, `description` |
+| OCI labels | `docker image inspect --format '{{json .Config.Labels}}' ghcr.io/raghulj/sidecartunnel:v0.2.0` | All nine `org.opencontainers.image.*`, set by `LABEL` in the Dockerfile so every build path carries them |
 | Version metadata | `docker run --rm ghcr.io/raghulj/sidecartunnel:v0.2.0 --version` | The tag, the full commit, and the build date |
 
 `ExposedPorts` is the one worth checking every time: `docker run -P` publishes every

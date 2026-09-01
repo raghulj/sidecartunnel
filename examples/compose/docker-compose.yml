@@ -18,7 +18,7 @@ services:
     # Each release prints its digest in its own release notes. To run a local build
     # instead:
     #
-    #     docker build -t sidecartunnel:dev .
+    #     make image                 # from the repository root
     #     ST_IMAGE=sidecartunnel:dev docker compose up -d
     image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:v0.1.1@sha256:90c14aba99da3053c1cc14e827414dfee9ea804cf57d49a95e21f0fe07167343}
 
