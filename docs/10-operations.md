@@ -74,7 +74,10 @@ accident.
 ```yaml
 services:
   sidecartunnel:
-    image: ghcr.io/raghulj/sidecartunnel:v0.1.0
+    # Tag and digest both: the tag names the release, the digest is what resolves. A tag
+    # is a pointer someone can move; a digest is the bytes. Each release prints its own
+    # digest in the release notes.
+    image: ghcr.io/raghulj/sidecartunnel:v0.1.0@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1
     environment:
       ST_SERVER__ALLOWED_ORIGINS: "https://app.example.com"
       ST_APP__CONNECT_URL: "http://webapp:5000/_st/connect"

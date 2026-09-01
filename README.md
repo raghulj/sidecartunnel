@@ -120,27 +120,57 @@ Published to GHCR on every tag, as a multi-arch manifest covering `linux/amd64` 
 package manager, non-root by default.
 
 ```
-docker pull ghcr.io/raghulj/sidecartunnel:v0.1.0
+docker pull ghcr.io/raghulj/sidecartunnel@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1
 ```
 
-| Tag | Moves | Use it for |
+That digest is `v0.1.0`. Every release prints its own in the release notes.
+
+| Reference | Moves | Use it for |
 |---|---|---|
-| `v0.1.0` | Never | Production. Pin this. |
+| `@sha256:…` | Never. It is the bytes, not a pointer to them | Production |
+| `v0.1.0` | Only if someone moves it | Reading a release note |
 | `0.1` | Patch releases within the minor | Picking up fixes without a redeploy decision |
 | `latest` | Every release | Local development only |
 
-Images and `checksums.txt` are signed with [cosign](https://docs.sigstore.dev) keyless, so
-there is no public key to distribute — the identity being attested is the release workflow
-itself.
+`refs/tags/v*` is protected against update and deletion, so `v0.1.0` will not move by
+accident. That is a repository setting rather than a property of the reference — the
+`v0.1.0` tag was pushed twice during two release attempts, at two different commits,
+before the rule existed. Only the digest cannot move.
+
+### Verifying A Release
+
+Cosign signatures, build provenance and an image SBOM start at **v0.1.1**. `v0.1.0`
+predates all three and carries only the archives, `checksums.txt` and one SBOM per
+archive. A `cosign verify` against `v0.1.0` therefore fails, and the reason is that
+nothing signed it — not that anything was tampered with.
+
+From v0.1.1 on, images and `checksums.txt` are signed with
+[cosign](https://docs.sigstore.dev) keyless, so there is no public key to distribute; the
+identity being attested is the release workflow itself.
 
 ```
-cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.0 \
+cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.1 \
   --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Each release also carries an SBOM per archive and a signed `checksums.txt`. The full
-verification procedure is in [`docs/15-releasing.md`](docs/15-releasing.md).
+The same releases carry a signed build provenance attestation over every archive and over
+the image, which needs no cosign install to check:
+
+```
+gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.1 --repo raghulj/sidecartunnel
+```
+
+| Artifact | v0.1.0 | v0.1.1 on |
+|---|---|---|
+| Archives, `checksums.txt` | Yes | Yes |
+| SBOM per archive | Yes | Yes |
+| SBOM for the image | No | Yes |
+| `checksums.txt.sig`, `.pem` | No | Yes |
+| Image cosign signature | No | Yes |
+| Build provenance attestation | No | Yes |
+
+The full verification procedure is in [`docs/15-releasing.md`](docs/15-releasing.md).
 
 ## Deployment
 
@@ -201,7 +231,9 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
 ```yaml
 services:
   sidecartunnel:
-    image: ghcr.io/raghulj/sidecartunnel:v0.1.0
+    # Tag and digest both. The tag says which release this is; the digest is what
+    # actually gets pulled, and it cannot be moved.
+    image: ghcr.io/raghulj/sidecartunnel:v0.1.0@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1
     healthcheck:
       test: ["CMD", "/sidecartunnel", "healthcheck"]
       interval: 10s

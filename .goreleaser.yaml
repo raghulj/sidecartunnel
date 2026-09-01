@@ -287,16 +287,26 @@ release:
     ## Container Images
 
     ```
-    docker pull ghcr.io/raghulj/sidecartunnel:{{ .Tag }}
+    docker pull {{ .Env.IMAGE_REPO }}:{{ .Tag }}
     ```
+
+    Pin the digest, not the tag — the digest is appended to these notes by the release
+    workflow, below.
 
     Images and `checksums.txt` are signed with [cosign](https://docs.sigstore.dev) keyless,
     against this workflow's OIDC identity. There is no public key to fetch:
 
     ```
-    cosign verify ghcr.io/raghulj/sidecartunnel:{{ .Tag }} \
+    cosign verify {{ .Env.IMAGE_REPO }}:{{ .Tag }} \
       --certificate-identity-regexp 'https://github.com/raghulj/sidecartunnel/.*' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    Every artifact also carries a signed build provenance attestation, which needs no
+    cosign install:
+
+    ```
+    gh attestation verify oci://{{ .Env.IMAGE_REPO }}:{{ .Tag }} --repo raghulj/sidecartunnel
     ```
 
     Release procedure and the archive verification steps:

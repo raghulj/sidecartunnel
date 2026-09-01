@@ -14,13 +14,19 @@ Full operational detail: [`docs/10-operations.md`](../../docs/10-operations.md) 
 | Replace `ST_APP__WEBHOOK_SECRETS` and `ST_CONTROL__SECRET` | Both are literal placeholders. Minimum 32 bytes each: `openssl rand -hex 32`. |
 | Replace the `webapp` image | It is `nginx:1.27-alpine` standing in for the application. Nothing runs until it serves `POST /_st/connect`. |
 | Set `ST_SERVER__ALLOWED_ORIGINS` to the real origin | Exact origins, no wildcards. Startup fails if it is empty. |
-| Pin the gateway image to a released tag | `:latest` moves, and no release has been cut, so the default does not resolve at all — `docker compose up` fails with `manifest unknown`. Build locally and set `ST_IMAGE`. |
+| Check the gateway image digest | It is pinned to the `v0.1.0` manifest list by digest. Newer releases print theirs in their own release notes; `:latest` and `:X.Y` both move and are not what a deployment should name. |
 
 ```sh
-docker build -t sidecartunnel:dev ../..        # no release exists yet
-ST_IMAGE=sidecartunnel:dev docker compose up -d
+docker compose up -d
 docker compose ps          # both replicas healthy
 docker compose logs -f sidecartunnel
+```
+
+To run a local build instead of the released image:
+
+```sh
+docker build -t sidecartunnel:dev ../..
+ST_IMAGE=sidecartunnel:dev docker compose up -d
 ```
 
 ```

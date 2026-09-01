@@ -3,6 +3,9 @@ name: ci
 # docs/11-testing.md §7 sets the gates: vet, staticcheck and `go test -race` on every
 # commit; the integration and failure layers against a real Redis on every pull request.
 # This workflow is that, plus the coverage gate from docs/14-coding-standards.md §3.
+#
+# Actions are pinned to commit SHAs, not tags; the reasoning is in release.yml. Dependabot
+# keeps them current.
 
 on:
   push:
@@ -24,15 +27,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           check-latest: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
           version: v2.12.2
 
@@ -74,9 +77,9 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -103,7 +106,7 @@ jobs:
 
       - name: Upload coverage profile
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.go }}
           path: coverage.out
@@ -112,9 +115,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26"
           check-latest: true
