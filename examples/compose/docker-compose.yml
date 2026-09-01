@@ -20,7 +20,7 @@ services:
     #
     #     docker build -t sidecartunnel:dev .
     #     ST_IMAGE=sidecartunnel:dev docker compose up -d
-    image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:v0.1.0@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1}
+    image: ${ST_IMAGE:-ghcr.io/raghulj/sidecartunnel:v0.1.1@sha256:90c14aba99da3053c1cc14e827414dfee9ea804cf57d49a95e21f0fe07167343}
 
     environment:
       # Exact origins, no wildcards. Startup fails if this is empty.

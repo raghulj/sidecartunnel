@@ -13,6 +13,13 @@ for a worked end-to-end run against a real application.
 
 ## [Unreleased]
 
+### Changed
+
+- The compose examples and the deployment snippets pin `0.1.1` by digest
+  (`sha256:90c14aba…`) rather than `0.1.0`. Verified against the published manifest: the
+  cosign signature, the SLSA provenance attestation and `checksums.txt.sig` all resolve to
+  the release workflow at `refs/tags/v0.1.1`.
+
 ## [0.1.1] — 2026-09-02
 
 Supply chain. No change to the gateway itself — the binary, the protocol and the

@@ -120,19 +120,19 @@ Published to GHCR on every tag, as a multi-arch manifest covering `linux/amd64` 
 package manager, non-root by default.
 
 ```
-docker pull ghcr.io/raghulj/sidecartunnel@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1
+docker pull ghcr.io/raghulj/sidecartunnel@sha256:90c14aba99da3053c1cc14e827414dfee9ea804cf57d49a95e21f0fe07167343
 ```
 
-That digest is `v0.1.0`. Every release prints its own in the release notes.
+That digest is `v0.1.1`. Every release prints its own in the release notes.
 
 | Reference | Moves | Use it for |
 |---|---|---|
 | `@sha256:…` | Never. It is the bytes, not a pointer to them | Production |
-| `v0.1.0` | Only if someone moves it | Reading a release note |
+| `v0.1.1` | Only if someone moves it | Reading a release note |
 | `0.1` | Patch releases within the minor | Picking up fixes without a redeploy decision |
 | `latest` | Every release | Local development only |
 
-`refs/tags/v*` is protected against update and deletion, so `v0.1.0` will not move by
+`refs/tags/v*` is protected against update and deletion, so a released tag will not move by
 accident. That is a repository setting rather than a property of the reference — the
 `v0.1.0` tag was pushed twice during two release attempts, at two different commits,
 before the rule existed. Only the digest cannot move.
@@ -141,10 +141,10 @@ before the rule existed. Only the digest cannot move.
 
 Cosign signatures, build provenance and an image SBOM start at **v0.1.1**. `v0.1.0`
 predates all three and carries only the archives, `checksums.txt` and one SBOM per
-archive. A `cosign verify` against `v0.1.0` therefore fails, and the reason is that
-nothing signed it — not that anything was tampered with.
+archive. A `cosign verify` against `v0.1.0` fails for that reason — nothing signed it —
+and not because anything was tampered with. Verify `v0.1.1` or later.
 
-From v0.1.1 on, images and `checksums.txt` are signed with
+Images and `checksums.txt` are signed with
 [cosign](https://docs.sigstore.dev) keyless, so there is no public key to distribute; the
 identity being attested is the release workflow itself.
 
@@ -154,8 +154,9 @@ cosign verify ghcr.io/raghulj/sidecartunnel:v0.1.1 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-The same releases carry a signed build provenance attestation over every archive and over
-the image, which needs no cosign install to check:
+Every archive, `checksums.txt` and the image also carry a signed build provenance
+attestation — which commit and which workflow produced the bytes, rather than only that
+they were signed. It needs no cosign install to check:
 
 ```
 gh attestation verify oci://ghcr.io/raghulj/sidecartunnel:v0.1.1 --repo raghulj/sidecartunnel
@@ -233,7 +234,7 @@ services:
   sidecartunnel:
     # Tag and digest both. The tag says which release this is; the digest is what
     # actually gets pulled, and it cannot be moved.
-    image: ghcr.io/raghulj/sidecartunnel:v0.1.0@sha256:706c7efc90243906aca690b1193092fc46fa32e1cdc9f9310db29d44ff272dc1
+    image: ghcr.io/raghulj/sidecartunnel:v0.1.1@sha256:90c14aba99da3053c1cc14e827414dfee9ea804cf57d49a95e21f0fe07167343
     healthcheck:
       test: ["CMD", "/sidecartunnel", "healthcheck"]
       interval: 10s
