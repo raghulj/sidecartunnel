@@ -17,6 +17,13 @@ for a worked end-to-end run against a real application.
 
 - Every GitHub Actions dependency moved to its current major, still SHA-pinned, which also
   clears the Node 20 runtime deprecation the `v0.1.1` release run warned about.
+- The Go toolchain moved to 1.27 everywhere it is named — the Dockerfile's build stage and
+  every `setup-go` step — so the archive binaries and the image binary in one release are
+  compiled by the same compiler. Bumping only the Dockerfile, which is what Dependabot
+  proposed, would have shipped a `v0.1.2` whose archives came from 1.26 and whose image
+  came from 1.27. The test matrix now covers 1.26 and 1.27: `go.mod` still declares `go
+  1.26` as the minimum a consumer needs, and that claim should be tested rather than
+  assumed.
 - The cosign **binary** is pinned to `v2.5.2` in `release.yml`, separately from the action
   that installs it. `cosign-installer` v4 installs cosign 3, which removed
   `--output-certificate` and `--output-signature` from `sign-blob` — both passed by the
