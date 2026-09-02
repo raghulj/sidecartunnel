@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/raghulj/sidecartunnel/internal/config"
 	"github.com/raghulj/sidecartunnel/internal/hub"
@@ -98,6 +99,25 @@ func TestServe_RefusesToStartWhileDraining(t *testing.T) {
 	}
 }
 
+// acceptReporter reports each accepted connection, so a test can wait for the server to
+// have taken one rather than assuming a returned net.Dial means it has. The report is
+// best-effort: a full buffer drops it rather than blocking the accept loop.
+type acceptReporter struct {
+	net.Listener
+	accepted chan<- struct{}
+}
+
+func (l acceptReporter) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		select {
+		case l.accepted <- struct{}{}:
+		default:
+		}
+	}
+	return c, err
+}
+
 // TestDrain_ReportsAListenerThatWouldNotShutDown: the shutdown of the HTTP listener is
 // bounded by the same budget as everything else, and a failure to meet it is reported
 // rather than swallowed (FR-19).
@@ -109,11 +129,12 @@ func TestDrain_ReportsAListenerThatWouldNotShutDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	accepts := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = r.srv.Serve(l)
+		_ = r.srv.Serve(acceptReporter{Listener: l, accepted: accepts})
 	}()
 	waitFor(t, func() bool { return r.srv.listening() })
 
@@ -126,6 +147,27 @@ func TestDrain_ReportsAListenerThatWouldNotShutDown(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
+	// net.Dial returns once the TCP handshake completes, which is before net/http has
+	// accepted the connection and moved it to StateNew — and StateNew is what makes the
+	// server non-quiescent. A Drain landing in that window finds nothing to wait for and
+	// returns nil, and the test fails claiming the budget was ignored.
+	//
+	// Serve registers a connection between one Accept returning and the next, so a second
+	// connection is a fence: once Accept has reported twice, the first one is registered.
+	// Waiting on the accepts alone would not be enough, because the first report races the
+	// registration that follows it.
+	fence, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatalf("dial the fence connection: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-accepts:
+		case <-time.After(failAfter):
+			t.Fatal("the server did not accept both connections")
+		}
+	}
+
 	spent, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := r.srv.Drain(spent); err == nil {
@@ -134,6 +176,9 @@ func TestDrain_ReportsAListenerThatWouldNotShutDown(t *testing.T) {
 
 	if err := raw.Close(); err != nil {
 		t.Fatalf("close raw connection: %v", err)
+	}
+	if err := fence.Close(); err != nil {
+		t.Fatalf("close the fence connection: %v", err)
 	}
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), failAfter)
 	defer cancelShutdown()

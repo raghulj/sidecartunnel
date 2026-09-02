@@ -36,7 +36,7 @@ for a worked end-to-end run against a real application.
 - **Signing moved to cosign 3, and the blob signature is now one file.** cosign 3 removed
   `--output-signature` and `--output-certificate` from `sign-blob` in favour of a Sigstore
   bundle carrying the signature, the certificate and the Rekor inclusion proof together, so
-  releases from here publish `checksums.txt.bundle` where `v0.1.1` published
+  releases after `v0.1.1` publish `checksums.txt.bundle` where `v0.1.1` publishes
   `checksums.txt.sig` and `checksums.txt.pem`. Verification takes `--bundle` in place of
   `--certificate` and `--signature`, and no longer re-fetches the inclusion proof from
   Rekor. `README.md` and `docs/15-releasing.md` §4 carry both shapes, since `v0.1.1` is
@@ -67,6 +67,16 @@ for a worked end-to-end run against a real application.
   the release workflow at `refs/tags/v0.1.1`.
 
 ### Fixed
+
+- **`TestDrain_ReportsAListenerThatWouldNotShutDown` raced net/http's accept loop.**
+  `net.Dial` returns once the TCP handshake completes, which is before net/http has
+  accepted the connection and moved it to `StateNew` — and `StateNew` is what makes the
+  server non-quiescent. A `Drain` landing in that window found nothing to wait for,
+  returned nil, and the test failed claiming the budget had been ignored. It failed a
+  batch of 200 runs every time, on Go 1.26 and 1.27 alike; CI only ever hid it by running
+  each test once. The test now uses a second connection as a fence — Serve registers a
+  connection between one `Accept` returning and the next, so a second accept proves the
+  first is registered. 0/5 batches on both versions afterwards.
 
 - **`TestConsumer_ControlRejections` raced the consumer's own bookkeeping.** It read
   `Stats()` the instant `waitClose` returned, but the counters are incremented by the
