@@ -68,6 +68,16 @@ for a worked end-to-end run against a real application.
 
 ### Fixed
 
+- **`TestDrain_ReportsAListenerThatWouldNotShutDown` raced net/http's accept loop.**
+  `net.Dial` returns once the TCP handshake completes, which is before net/http has
+  accepted the connection and moved it to `StateNew` — and `StateNew` is what makes the
+  server non-quiescent. A `Drain` landing in that window found nothing to wait for,
+  returned nil, and the test failed claiming the budget had been ignored. It failed a
+  batch of 200 runs every time, on Go 1.26 and 1.27 alike; CI only ever hid it by running
+  each test once. The test now uses a second connection as a fence — Serve registers a
+  connection between one `Accept` returning and the next, so a second accept proves the
+  first is registered. 0/5 batches on both versions afterwards.
+
 - **`TestConsumer_ControlRejections` raced the consumer's own bookkeeping.** It read
   `Stats()` the instant `waitClose` returned, but the counters are incremented by the
   consumer goroutine *after* it closes the sink, so the read raced that goroutine. It held
